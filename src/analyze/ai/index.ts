@@ -8,7 +8,8 @@
 import type { AtlasData } from '../../atlas/types';
 import { buildAtlas } from '../build';
 import type { Narration, Partition, RepoSource } from '../types';
-import { blockEvidence, composeEvidence, estimateTokens, repoEvidence } from './evidence';
+import { blockEvidence, composeEvidence, estimateTokens, repoEvidence,
+  type BlockEvidence, type ComposeEvidence, type RepoEvidence } from './evidence';
 import { readCache, writeCache } from './cache';
 import { COMPOSE, NARRATE, PARTITION, SYSTEM } from './prompts';
 import { addUsage, DEFAULT_MODEL, noUsage, runPass, type Usage } from './provider';
@@ -45,12 +46,14 @@ const blockTarget = (files: number) => Math.max(8, Math.min(24, Math.round(files
 
 const section = (title: string, body: string) => `\n--- ${title} ---\n${body}\n`;
 
-function partitionPrompt(source: RepoSource): string {
-  const e = repoEvidence(source);
+/** Prompt builders take evidence, not a repository, so the same code serves the CLI (which scans
+    locally) and the enrich endpoint (which is handed a pack by the browser and never sees the repo). */
+export function buildPartitionPrompt(e: RepoEvidence & { blockTarget?: number }): string {
+  const target = e.blockTarget ?? blockTarget(e.fileCount);
   return [
     PARTITION,
     section('REPOSITORY', `${e.name} @ ${e.ref} - ${e.fileCount} files`),
-    section('HOW MANY BLOCKS', `Aim for about ${blockTarget(e.fileCount)} blocks. Fewer than ${Math.max(6, blockTarget(e.fileCount) - 6)} means you have merged things that deserve to be seen apart.`),
+    section('HOW MANY BLOCKS', `Aim for about ${target} blocks. Fewer than ${Math.max(6, target - 6)} means you have merged things that deserve to be seen apart.`),
     section('README', e.readme),
     section('MANIFESTS', e.manifests),
     section('ENTRY POINTS', e.entryPoints.join('\n') || '(none recognised)'),
@@ -59,7 +62,7 @@ function partitionPrompt(source: RepoSource): string {
   ].join('\n');
 }
 
-function narratePrompt(blocks: ReturnType<typeof blockEvidence>): string {
+export function buildNarratePrompt(blocks: BlockEvidence[]): string {
   return [
     NARRATE,
     ...blocks.map((b) => section(`BLOCK ${b.id} - ${b.name}  [${b.group}]  ${b.loc}`, [
@@ -71,8 +74,7 @@ function narratePrompt(blocks: ReturnType<typeof blockEvidence>): string {
   ].join('\n');
 }
 
-function composePrompt(source: RepoSource, data: AtlasData): string {
-  const e = composeEvidence(source, data);
+export function buildComposePrompt(e: ComposeEvidence): string {
   return [
     COMPOSE,
     section('REPOSITORY', `${e.name} @ ${e.ref}`),
@@ -82,6 +84,10 @@ function composePrompt(source: RepoSource, data: AtlasData): string {
     section('EXTERNAL SERVICES AND PACKAGES', e.externals),
   ].join('\n');
 }
+
+const partitionPrompt = (source: RepoSource) => buildPartitionPrompt(repoEvidence(source));
+const narratePrompt = buildNarratePrompt;
+const composePrompt = (source: RepoSource, data: AtlasData) => buildComposePrompt(composeEvidence(source, data));
 
 /** What an enrichment would cost, without spending anything. */
 export function planEnrichment(source: RepoSource, opts: EnrichOptions = {}): { label: string; tokens: number }[] {

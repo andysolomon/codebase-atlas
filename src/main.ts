@@ -1,6 +1,7 @@
 import { defineAtlas } from './atlas/engine';
 import type { AtlasData, PaperTheme } from './atlas/types';
 import { buildAtlas, loadGitHub, parseGitHub } from './analyze';
+import { enrichInBrowser } from './analyze/ai/client';
 import { ARC_WORLDS } from './data/arc-worlds';
 
 defineAtlas();
@@ -57,8 +58,36 @@ async function openGitHub(query: string) {
     showStatus(`BUILDING THE MAP …`);
     atlas.data = buildAtlas(src);
     hideStatus();
+    // The scanned map is on screen. If an enrichment endpoint is deployed, upgrade it in place.
+    void enrich(src, label);
   } catch (e) {
     showStatus(`✕ ${esc(String((e as Error).message || e)).toUpperCase()}`, true);
+  }
+}
+
+// Once the endpoint has proved to be absent — nobody deployed it, `bun run dev` has no backend —
+// stop asking for the rest of the session rather than failing three times per repo.
+let enrichOffered = true;
+let enriching: AbortController | null = null;
+
+async function enrich(src: Parameters<typeof buildAtlas>[0], label: string) {
+  if (!enrichOffered) return;
+  enriching?.abort();
+  const run = new AbortController();
+  enriching = run;
+  try {
+    const r = await enrichInBrowser(src, {
+      signal: run.signal,
+      onProgress: (m) => { if (!run.signal.aborted) showStatus(`${esc(label).toUpperCase()} · ${esc(m).toUpperCase()} …`); },
+    });
+    if (run.signal.aborted) return;
+    if (r.data.provenance) atlas.data = r.data;
+    else if (r.fallbacks.some((f) => /\b(404|405)\b|Failed to fetch|NetworkError/i.test(f))) enrichOffered = false;
+    hideStatus();
+  } catch {
+    hideStatus();   // a map without written prose is still a map
+  } finally {
+    if (enriching === run) enriching = null;
   }
 }
 

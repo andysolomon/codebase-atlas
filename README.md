@@ -19,7 +19,10 @@ bun run preview
 | `src/data/arc-worlds.ts` | Demo dataset: `andysolomon/arc-worlds` (Little Worlds). |
 | `src/main.ts` | App chrome: defines the element, feeds it the dataset, reads `?paper=`, `?repo=`, `?atlas=` from the URL. |
 | `src/analyze/` | The repo analyzer — turns a file listing into an `AtlasData` (see below). |
+| `src/analyze/ai/` | Optional AI analysis: decides what the blocks are and writes the prose. |
+| `api/enrich.ts` | Vercel Function that runs one AI pass, for the in-browser scan. |
 | `scripts/atlas.ts` | CLI: `bun run atlas <path \| github-url>`. |
+| `scripts/eval-atlas.ts` | Scores a generated atlas against the hand-written `arc-worlds` one. |
 | `prototype/` | The original design-system bundle and prototype — the source of truth. |
 
 ## Usage
@@ -48,6 +51,7 @@ bun run atlas .                               # this repo
 bun run atlas ../some-repo                    # any folder
 bun run atlas https://github.com/owner/repo   # or a GitHub URL (GITHUB_TOKEN for private repos)
 bun run atlas owner/repo -o out.json          # explicit output path; --stdout prints instead
+bun run atlas . --ai                          # let a model name the blocks and write the prose
 ```
 
 Writes `public/atlases/<name>.json` and prints the link to open it:
@@ -55,6 +59,49 @@ Writes `public/atlases/<name>.json` and prints the link to open it:
 
 **3. By hand.** Build an `AtlasData` object (see `src/atlas/types.ts`; `src/data/arc-worlds.ts`
 is a hand-written example with real narrative) and assign it: `atlas.data = myData`.
+
+### AI analysis
+
+Without `--ai`, every block is a folder and every sentence is a template over byte counts. With `--ai`,
+a model decides what the blocks *are* — concepts rather than folders — and writes the cards, the
+overview and one traced user journey. **The scan keeps sole authority over every number**: sizes,
+heights, positions, import edges and file lists are computed exactly as before, from the model's
+choice of blocks.
+
+```sh
+bun run atlas . --ai                                    # cheap default
+bun run atlas . --ai --model spacexai/grok-4.6          # any AI Gateway model id
+bun run atlas . --ai --model-partition anthropic/claude-opus-4.8   # spend where it counts
+bun run atlas . --ai --dry-run                          # token estimate, makes no calls
+bun run atlas . --ai --explain                          # where each headline number came from
+```
+
+Set `AI_GATEWAY_API_KEY` (or run `vercel link && vercel env pull`, which uses OIDC and needs no
+long-lived key). To try it with no Vercel setup at all, `--model minimax-direct/MiniMax-M3` talks to
+MiniMax's Anthropic-compatible endpoint with just `MINIMAX_API_KEY`.
+
+Three passes — decide the blocks, describe each one, write the front matter. Everything a model
+returns is checked against the scan before it can touch the map: a path that does not exist, a block
+id that was never drawn, an edge that is not on the map, or a headline number citing no evidence is
+dropped and reported. Prose is trimmed to what a card can hold. **Any pass that fails keeps the
+templated prose for that part**, so an `--ai` build is never worse than a plain one. Results are
+cached in `.atlas-cache/` by prompt, so re-running is free.
+
+Measured against `src/data/arc-worlds.ts` — a map of `../arc-worlds` that a human wrote, which makes
+it a real held-out target — using `bun scripts/eval-atlas.ts <atlas.json>`:
+
+| | plain | `--ai` |
+| --- | --- | --- |
+| hand-written block names recovered | 39% | 82% |
+| bespoke groups (`THE ENGINE`, `TERRAIN V2`, `LEGACY`) | 4/7, plus 4 generic | 7/7, none generic |
+| blocks with written prose | 0/22 | 18/24 |
+| trace | 6 import hops | 14 steps, revisits blocks |
+
+**In the browser.** When `?repo=` scans a repository, the templated map is drawn immediately and then
+upgraded in place if `/api/enrich` is deployed. The endpoint accepts only a known pass name and a pack
+of named fields and returns only atlas-shaped JSON — there is no free-text field and the client cannot
+choose the model, so it cannot be used as a general LLM proxy. Rate limit it with a Vercel Firewall
+rule. Nothing in `src/` imports `ai` or `zod`, so the browser bundle stays dependency-free.
 
 ### How the scan becomes a map
 
@@ -79,6 +126,7 @@ is a hand-written example with real narrative) and assign it: `atlas.data = myDa
 | `src/analyze/imports.ts` | Import extraction per language |
 | `src/analyze/ignore.ts` | Ignored folders, code/text extensions |
 | `scripts/atlas.ts` | The CLI; adds the local-filesystem loader |
+| `src/analyze/ai/` | The three AI passes, their prompts, and the validation that gates them |
 
 ## Contributing
 
