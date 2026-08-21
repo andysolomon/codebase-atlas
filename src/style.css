@@ -4,6 +4,14 @@ html[data-theme="light"],html[data-theme="light"] body{background:#f1eee4}
 html[data-theme="dark"],html[data-theme="dark"] body{background:#191510}
 a{color:#16130a}a:hover{color:#5a4f28}
 /* Scan status — a bordered paper card, bottom-centre of the map, in the atlas's own voice. */
-#status{display:none;position:fixed;left:50%;bottom:54px;transform:translateX(-50%);z-index:10;max-width:70vw;border:1.5px solid #16130a;background:#cfc79c;color:#16130a;padding:9px 14px;font-size:10px;letter-spacing:.14em;line-height:1.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#status{display:none;align-items:center;position:fixed;left:50%;bottom:54px;transform:translateX(-50%);z-index:10;max-width:70vw;border:1.5px solid #16130a;background:#cfc79c;color:#16130a;padding:9px 14px;font-size:10px;letter-spacing:.14em;line-height:1.6}
+/* The message gives up its width first; whatever is offered alongside it stays whole and clickable. */
+#status .msg{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 html[data-theme="light"] #status{border-color:#233457;background:#f1eee4;color:#233457}
 html[data-theme="dark"] #status{border-color:#e4d3a1;background:#191510;color:#e4d3a1}
+/* An offer inside the status card — spending money is a click, never a side effect. Colours are
+   spelled out per theme: `currentColor` would resolve against the button's own colour, not the card's. */
+#status button{flex:none;font:inherit;letter-spacing:.14em;margin-left:14px;padding:5px 10px;border:1.5px solid #16130a;background:#16130a;color:#cfc79c;cursor:pointer;white-space:nowrap}
+html[data-theme="light"] #status button{border-color:#233457;background:#233457;color:#f1eee4}
+html[data-theme="dark"] #status button{border-color:#e4d3a1;background:#e4d3a1;color:#191510}
+#status button:hover{opacity:.82}

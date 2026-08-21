@@ -91,8 +91,15 @@ Do not report facts about the repository as a file tree or about this map: no FI
 no BLOCKS, no DEPENDENCIES, no ASSETS, no IMPORT LINKS. The scan already prints those. A stat that would
 still be true if the code were rewritten in another language is the kind you want.
 
-For every stat you must cite, in the evidence field, where in the evidence above the number came from. If
-you cannot cite it, do not include the stat. There is no penalty for returning fewer stats.
+For every stat, the evidence field must hold a VERBATIM QUOTE from the evidence above — copied exactly,
+long enough to find (a dozen characters or more), and containing the number itself. Do not describe where
+the number came from; quote the text it came from.
+
+  stats: [{ key: "MOONS MODELLED", value: "22", evidence: "and Pluto, and 22 real moons - are rendered from measured data" }]
+
+This is checked. A quote that does not appear in the evidence above, or that does not contain the number,
+is discarded along with its stat. If you cannot quote it, do not include the stat — there is no penalty for
+returning fewer stats, and an uncited number is exactly the kind that turns out to be invented.
 
 Mark key phrases in the overview paragraphs with [[double brackets]] — a thesis about the system, not decoration.
 The overview should read top to bottom the way the map does.`;
