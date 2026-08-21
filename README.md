@@ -1,7 +1,9 @@
 # Codebase Atlas
 
 An interactive isometric map that renders a code repository as a city of hatched blocks on drafting paper.
-Vite + TypeScript; the renderer is a framework-free custom element operating on SVG with zero runtime dependencies.
+Vite + TypeScript; the renderer is a framework-free custom element. The chrome is plain DOM; the map is a
+Three.js scene you move through like a map — pan, turn, tilt, zoom to the cursor — whose default camera
+reproduces the original drafting-paper isometric projection exactly.
 
 ```sh
 bun install
@@ -14,7 +16,8 @@ bun run preview
 
 | Path | What |
 | --- | --- |
-| `src/atlas/engine.ts` | The renderer — a 1:1 TypeScript port of `prototype/atlas-engine.js`. Registers `<codebase-atlas paper="tan\|light\|dark" flow="true\|false">`. |
+| `src/atlas/engine.ts` | The element — topbar, sidebar, right panel, tooltip, trace, inside-view — ported from `prototype/atlas-engine.js`. Registers `<codebase-atlas paper="tan\|light\|dark" flow="true\|false">`. |
+| `src/atlas/scene.ts` | The map itself: a Three.js scene with `MapControls`, an orthographic camera by default (`FLAT`) or perspective (`DEEP`), elevated import arcs, contact shadows, DOM labels that stay upright and thin out as you zoom out, and the animated FIT / RESET / focus moves. |
 | `src/atlas/types.ts` | The `AtlasData` contract (structures, edges, externals, trace, groups, stats). |
 | `src/data/arc-worlds.ts` | Demo dataset: `andysolomon/arc-worlds` (Little Worlds). |
 | `src/main.ts` | App chrome: defines the element, feeds it the dataset, reads `?paper=`, `?repo=`, `?atlas=` from the URL. |
@@ -36,8 +39,8 @@ bun run preview
 - **History** — `◀` `▶` step through the repositories opened this session. Stepping back is instant and costs nothing: the built map, including any analysis, is kept with the entry. Repos openable by name are remembered across reloads and suggested in the field.
 - **Theme** — `?paper=tan|light|dark` in the URL, or the `PAPER · …` button in the topbar. The URL is kept in step.
 - **Deep links** — `#inside=<id>` opens a structure; `#trace=<n>` opens trace step *n* (0-based).
-- **Keyboard** — `ESC` exits inside-view / ends trace / deselects; `←` `→` step a trace.
-- **Map** — drag to pan, wheel to zoom toward the cursor, `⌖ FIT` to reset; click selects, double-click goes inside.
+- **Keyboard** — `ESC` exits inside-view / ends trace / deselects; `←` `→` step a trace. With the map focused: arrows pan (`⇧` for more), `+` `−` zoom, `F` fits, `R` resets the isometric view, `N` turns back to north.
+- **Map** — drag to pan, right-drag or `ctrl`-drag to turn and tilt, wheel to zoom toward the cursor; one finger pans, two fingers pinch and twist. Click selects, double-click flies to a block and goes inside it. The control stack top-right: `⌖ FIT` frames everything, `⟲ RESET` restores the original isometric composition, `+` `−` zoom, the compass turns back to north, `FLAT`/`DEEP` switches between orthographic and perspective without moving the view, and `?` lists every gesture. The camera never goes under the paper, never tilts past useful angles, and cannot pan or zoom the atlas out of sight. `prefers-reduced-motion` turns the flights into cuts and switches off inertia.
 
 ## Mapping any repository
 
@@ -286,7 +289,7 @@ The endpoint accepts a known pass name and a whitelist of named fields at bounde
 only atlas-shaped JSON. There is no free-text field and the client cannot choose the model, so it is
 not usable as a general LLM proxy. Set `ATLAS_ENRICH_MODEL` to pin the model it uses.
 
-Nothing under `src/` imports `ai` or `zod`, so the browser bundle stays dependency-free.
+Nothing under `src/` imports `ai` or `zod`; the browser bundle's only runtime dependency is `three`.
 
 #### Deploying it
 
