@@ -1,6 +1,6 @@
 /** Loads a public (or token-authorised) GitHub repository as a RepoSource, in the browser or in Bun/Node. */
 
-import { isCode, isIgnoredPath } from './ignore';
+import { CONTEXT_FILE, isCode, isIgnoredPath } from './ignore';
 import type { OnProgress, RepoFile, RepoSource } from './types';
 
 export interface GitHubRef { owner: string; repo: string; ref?: string }
@@ -51,8 +51,8 @@ export async function loadGitHub(ref: GitHubRef, opts: GitHubOptions = {}): Prom
 
   // Content: manifests first, then code files — entry-looking files and the largest first, up to the cap.
   const maxBytes = opts.maxFileBytes ?? 300 * 1024;
-  const want = files.filter((x) => (MANIFEST.test(x.path) || isCode(x.path)) && x.size <= maxBytes && x.size > 0);
-  const score = (x: RepoFile) => (MANIFEST.test(x.path) ? 1e12 : 0) + (/(^|\/)(index|main|app|server)\./.test(x.path) ? 1e9 : 0) + x.size - x.path.split('/').length * 1000;
+  const want = files.filter((x) => (MANIFEST.test(x.path) || CONTEXT_FILE.test(x.path) || isCode(x.path)) && x.size <= maxBytes && x.size > 0);
+  const score = (x: RepoFile) => (MANIFEST.test(x.path) ? 1e12 : 0) + (CONTEXT_FILE.test(x.path) ? 5e11 : 0) + (/(^|\/)(index|main|app|server)\./.test(x.path) ? 1e9 : 0) + x.size - x.path.split('/').length * 1000;
   want.sort((a, b) => score(b) - score(a));
   const picked = want.slice(0, opts.maxContentFiles ?? 400);
   const rawBase = `https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/${encodeURIComponent(branch)}/`;

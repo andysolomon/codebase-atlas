@@ -76,6 +76,18 @@ export interface AtlasData {
   EDGES: Edge[];
   EXTERNALS?: External[];
   TRACE: TraceStep[];
+  /** Present when the prose was written by a model rather than templated from the scan. */
+  provenance?: Provenance;
+}
+
+/** Where an atlas's prose came from. Every number on the map still comes from the scan. */
+export interface Provenance {
+  /** Model id per pass, e.g. { partition: 'spacexai/grok-4.6', narrate: 'minimax/minimax-m3' }. */
+  models: Record<string, string>;
+  generatedAt: string;
+  /** Passes that fell back to templated prose, with the reason. */
+  fallbacks?: string[];
+  usage?: { input: number; output: number };
 }
 
 declare global {

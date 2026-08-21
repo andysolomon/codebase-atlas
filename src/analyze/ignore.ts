@@ -43,3 +43,8 @@ export function langOf(path: string): string {
   const e = extOf(path);
   return CODE_EXT[e] || TEXT_EXT[e] || (e ? e.toUpperCase() : 'Other');
 }
+
+/** Prose files worth reading even though they are not code: they say what the thing IS.
+    Content for these is loaded alongside manifests, and is used only as evidence for AI analysis —
+    the scan draws no edges from them. */
+export const CONTEXT_FILE = /^(readme|architecture|contributing|agents|claude)\.(md|txt|rst)$|^docs\/(readme|architecture|overview)\.md$/i;

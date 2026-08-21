@@ -4,17 +4,22 @@
 import type { AtlasData, ChildPart, Edge, External, Group, Structure, TraceStep } from '../atlas/types';
 import { extOf, isCode, isIgnoredPath, isText, langOf } from './ignore';
 import { extractImports, packageName } from './imports';
-import type { RepoFile, RepoSource } from './types';
+import type { Narration, Partition, RepoFile, RepoSource, UnitSpec } from './types';
 
 export interface BuildOptions {
   /** Upper bound on the number of blocks. Default 24. */
   maxStructures?: number;
   /** Upper bound on drawn edges. Default 44. */
   maxEdges?: number;
+  /** Which files form which block. Defaults to `dirPartition` — one block per folder. */
+  partition?: Partition;
+  /** Prose overlay, applied last. Every field falls back to the templated text. */
+  narration?: Narration;
 }
 
 interface Unit {
-  dir: string;              // '' = repo root
+  key: string;              // partition key — the folder for `dirPartition`, a slug otherwise
+  dir: string;              // the folder, or the common parent of the unit's paths ('' = repo root)
   files: RepoFile[];
   bytes: number;            // text bytes — what height encodes
   assets: number;           // binary files (images, archives…): counted, not measured
@@ -22,7 +27,6 @@ interface Unit {
   code: string;
   name: string;
   group: string;
-  hasChildUnits: boolean;
   gx: number; gy: number; w: number; d: number; h: number; slab: boolean;
   out: Map<string, { n: number; ex: string; exTest?: boolean }>;   // unit id → count + example
   inn: Map<string, number>;
@@ -149,6 +153,37 @@ function chooseUnitDirs(files: RepoFile[], max: number): string[] {
   return out;
 }
 
+/** The common parent folder of a set of paths — '' when they share none. */
+function commonDir(paths: string[]): string {
+  const dirs = paths.map((p) => (p.endsWith('/') ? p.slice(0, -1) : dirOf(p)));
+  if (!dirs.length) return '';
+  let out = dirs[0].split('/');
+  for (const d of dirs.slice(1)) {
+    const segs = d.split('/');
+    let i = 0;
+    while (i < out.length && i < segs.length && out[i] === segs[i]) i++;
+    out = out.slice(0, i);
+  }
+  return out.join('/');
+}
+
+/** One block per folder — the default partition, and what every atlas used before AI analysis. */
+export function dirPartition(files: RepoFile[], max: number): Partition {
+  const unitDirs = chooseUnitDirs(files, max);
+  const units: UnitSpec[] = unitDirs.map((dir) => {
+    const hasChildUnits = unitDirs.some((o) => o !== dir && (dir === '' ? true : o.startsWith(dir + '/')));
+    const group = categorize(dir);
+    const seg = dir.split('/').pop() || '';
+    return {
+      key: dir, dir, group,
+      name: niceName(dir) + (hasChildUnits && dir !== '' ? ' (root)' : ''),
+      paths: [dir === '' ? '' : dir + '/'],
+      slab: group === 'THE DATA' && SLAB.test(seg),
+    };
+  });
+  return { groups: GROUP_ORDER, units };
+}
+
 export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasData {
   const MAX = opts.maxStructures ?? 24, MAX_EDGES = opts.maxEdges ?? 44;
   const files = source.files.filter((f) => !isIgnoredPath(f.path)).map((f) => ({ ...f, path: normalize(f.path) }));
@@ -157,29 +192,60 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
   const assetCount = files.length - textFiles.length;
 
   // ── units ──
-  const unitDirs = chooseUnitDirs(files, MAX);
-  const byLen = unitDirs.slice().sort((a, b) => b.length - a.length);
-  const unitOf = (path: string) => byLen.find((d) => d === '' || path === d || path.startsWith(d + '/'))!;
+  const partition = opts.partition ?? dirPartition(files, MAX);
+
+  // Path → unit key. Longest folder prefix wins; the catch-all ('') is the last resort.
+  const NO_UNIT = '\u0000';
+  const exactOf = new Map<string, string>();
+  const prefixes: [string, string][] = [];
+  let catchAll: string | null = null;
+  for (const spec of partition.units) for (const p of spec.paths) {
+    if (p === '') catchAll = spec.key;
+    else if (p.endsWith('/')) prefixes.push([p.slice(0, -1), spec.key]);
+    else exactOf.set(p, spec.key);
+  }
+  prefixes.sort((a, b) => b[0].length - a[0].length);
+  const prefixKeys = new Set(prefixes.map(([d]) => d));
+  const prefixOf = (path: string): string | null => {
+    for (const [d, k] of prefixes) if (path === d || path.startsWith(d + '/')) return k;
+    return null;
+  };
+
   const units = new Map<string, Unit>();
-  unitDirs.forEach((dir) => units.set(dir, {
-    dir, files: [], bytes: 0, assets: 0, id: '', code: '', name: '', group: categorize(dir),
-    hasChildUnits: unitDirs.some((o) => o !== dir && (dir === '' ? true : o.startsWith(dir + '/'))),
-    gx: 0, gy: 0, w: 1, d: 1, h: 0.5, slab: false, out: new Map(), inn: new Map(), ext: new Map(),
+  partition.units.forEach((spec) => units.set(spec.key, {
+    key: spec.key, dir: spec.dir ?? commonDir(spec.paths), files: [], bytes: 0, assets: 0,
+    id: '', code: '', name: spec.name, group: spec.group,
+    gx: 0, gy: 0, w: 1, d: 1, h: 0.5, slab: !!spec.slab, out: new Map(), inn: new Map(), ext: new Map(),
   }));
-  for (const f of files) { const u = units.get(unitOf(f.path))!; u.files.push(f); if (isText(f.path)) u.bytes += f.size; else u.assets++; }
-  for (const d of unitDirs) if (units.get(d)!.files.length === 0 && d !== '') units.delete(d);
-  if (units.get('')!.files.length === 0 && units.size > 1) units.delete('');
+  let uncovered = 0;
+  for (const f of files) {
+    const u = units.get(exactOf.get(f.path) ?? prefixOf(f.path) ?? catchAll ?? NO_UNIT);
+    if (!u) { uncovered++; continue; }
+    u.files.push(f); if (isText(f.path)) u.bytes += f.size; else u.assets++;
+  }
+  // Drop blocks the scan found nothing in — but never end up with no blocks at all.
+  const empty = [...units.values()].filter((u) => u.files.length === 0);
+  if (empty.length < units.size) empty.forEach((u) => units.delete(u.key));
   const U = [...units.values()];
+
+  // Import specifiers arrive without an extension, so index every file by its stem too.
+  const stemOf = new Map<string, string>();
+  for (const u of U) for (const f of u.files) {
+    const stem = f.path.replace(/\.[^./]+$/, '');
+    if (!stemOf.has(stem)) stemOf.set(stem, u.key);
+  }
+  const unitOf = (path: string): string =>
+    exactOf.get(path) ?? prefixOf(path) ?? stemOf.get(path) ?? stemOf.get(path + '/index') ?? catchAll ?? NO_UNIT;
 
   // names (disambiguate duplicates with the parent segment), ids, codes
   const nameCount = new Map<string, number>();
-  U.forEach((u) => { u.name = niceName(u.dir) + (u.hasChildUnits && u.dir !== '' ? ' (root)' : ''); nameCount.set(u.name, (nameCount.get(u.name) || 0) + 1); });
-  U.forEach((u) => { if ((nameCount.get(u.name) || 0) > 1 && u.dir.includes('/')) u.name = titleCase(dirOf(u.dir).split('/').pop()!) + ' · ' + u.name; });
+  U.forEach((u) => nameCount.set(u.name, (nameCount.get(u.name) || 0) + 1));
+  U.forEach((u) => { if ((nameCount.get(u.name) || 0) > 1 && u.key.includes('/')) u.name = titleCase(dirOf(u.key).split('/').pop()!) + ' · ' + u.name; });
   const codes = assignCodes(U.map((u) => u.name));
   const idUsed = new Set<string>();
   U.forEach((u, i) => {
     u.code = codes[i];
-    let id = (u.dir || 'root').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'root';
+    let id = (u.key || 'root').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'root';
     while (idUsed.has(id)) id += '2';
     idUsed.add(id); u.id = id;
   });
@@ -192,12 +258,11 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
     const side = Math.max(1, Math.min(3, 1 + Math.log2(Math.max(1, n)) / 3.2));
     u.w = u.d = Math.round(side * 10) / 10;
     u.h = Math.round((0.35 + 2.65 * Math.sqrt(u.bytes / maxBytes)) * 100) / 100;
-    const seg = u.dir.split('/').pop() || '';
-    if (u.group === 'THE DATA' && SLAB.test(seg)) { u.slab = true; u.h = 0.22; u.w = u.d = Math.max(u.w, 1.6); }
+    if (u.slab) { u.h = 0.22; u.w = u.d = Math.max(u.w, 1.6); }
   });
 
   // ── imports → edges ──
-  const srcDir = unitDirs.includes('src') || files.some((f) => f.path.startsWith('src/')) ? 'src' : '';
+  const srcDir = files.some((f) => f.path.startsWith('src/')) ? 'src' : '';
   const topSegs = new Set(files.map((f) => f.path.split('/')[0]));
   const resolveInternal = (fromPath: string, spec: string, pathLike: boolean): string | null => {
     let p: string | null = null;
@@ -226,7 +291,7 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
       else if (srcDir && hits(srcDir + '/' + asPath)) p = srcDir + '/' + asPath;
       else if (ext === 'go' && asPath.includes('/')) {
         const segs = asPath.split('/');
-        for (let i = 1; i < segs.length; i++) { const tail = segs.slice(i).join('/'); if (unitDirs.includes(tail)) { p = tail; break; } }
+        for (let i = 1; i < segs.length; i++) { const tail = segs.slice(i).join('/'); if (prefixKeys.has(tail)) { p = tail; break; } }
       }
     }
     if (p == null) return null;
@@ -278,7 +343,12 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
   const runtime = usesBun ? 'Bun' : files.some((f) => f.path === 'pnpm-lock.yaml') ? 'pnpm' : files.some((f) => f.path === 'yarn.lock') ? 'Yarn' : files.some((f) => f.path === 'package-lock.json') ? 'npm' : '';
 
   // ── layout: one row band per group, wrap long rows ──
-  const groupsPresent = GROUP_ORDER.filter((g) => U.some((u) => u.group === g));
+  const groupOrder = partition.groups ?? GROUP_ORDER;
+  const seenGroups = U.map((u) => u.group);
+  const groupsPresent = [
+    ...groupOrder.filter((g) => seenGroups.includes(g)),
+    ...[...new Set(seenGroups)].filter((g) => !groupOrder.includes(g)),
+  ];
   const ROW_W = 19; let gy = 0;
   const GROUPS: Group[] = [];
   for (const g of groupsPresent) {
@@ -397,7 +467,7 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
   const product = (source.name.split('/').pop() || source.name).replace(/[-_]+/g, ' ').toUpperCase();
   const subj = `a ${langs[0] ? langs[0][0] : 'mixed'}${frameworks[0] ? ' / ' + frameworks.slice(0, 2).join(' + ') : ''} codebase`;
 
-  return {
+  const data: AtlasData = {
     repo: `${source.name} · ${source.ref}`, product,
     traceTitle: 'ONE IMPORT CHAIN',
     stats: [
@@ -425,5 +495,52 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
     ],
     HOW_TO_READ: 'Hover anything for a plain description; click it for the full card. [[Go inside]] a block to see its largest files. TRACE follows the heaviest import chain out from the entry point.',
     GROUPS, STRUCTURES, EDGES, EXTERNALS, TRACE,
+  };
+  if (uncovered) data.OVERVIEW_HOW.push(`${uncovered} scanned file${uncovered === 1 ? '' : 's'} matched no block and are not counted on the map.`);
+  return opts.narration ? applyNarration(data, opts.narration) : data;
+}
+
+/** Lay written prose over a finished atlas. Anything the writer left out keeps its templated text,
+    and nothing here can move a block, change a number, or invent an id. */
+function applyNarration(d: AtlasData, n: Narration): AtlasData {
+  const ids = new Set(d.STRUCTURES.map((s) => s.id));
+  const byId = new Map((n.units ?? []).filter((u) => ids.has(u.id)).map((u) => [u.id, u]));
+
+  const STRUCTURES = d.STRUCTURES.map((s) => {
+    const u = byId.get(s.id);
+    if (!u) return s;
+    const childWhat = (c: ChildPart) => {
+      const w = u.children;
+      if (!w) return c.what;
+      // Written prose may key a child by its full path or just its file name.
+      return w[c.name] ?? Object.entries(w).find(([k]) => k === c.name || k.endsWith('/' + c.name))?.[1] ?? c.what;
+    };
+    return {
+      ...s,
+      what: u.what?.trim() || s.what,
+      how: u.how?.trim() || s.how,
+      ...(s.children ? { children: s.children.map((c) => ({ ...c, what: childWhat(c) })) } : {}),
+    };
+  });
+
+  const EDGES = n.edgeLabels
+    ? d.EDGES.map((e) => ({ ...e, pay: n.edgeLabels![`${e.f}->${e.t}`]?.trim() || e.pay }))
+    : d.EDGES;
+
+  // A trace step may revisit a block — a user journey doubles back where an import chain cannot.
+  const trace = n.trace?.filter(([id]) => ids.has(id)) ?? [];
+
+  return {
+    ...d, STRUCTURES, EDGES,
+    TRACE: trace.length ? trace : d.TRACE,
+    product: n.product?.trim() || d.product,
+    stats: n.stats?.length ? n.stats : d.stats,
+    overviewTitle: n.overviewTitle?.trim() || d.overviewTitle,
+    overviewKicker: n.overviewKicker?.trim() || d.overviewKicker,
+    overviewSub: n.overviewSub?.trim() || d.overviewSub,
+    OVERVIEW_WHAT: n.OVERVIEW_WHAT?.length ? n.OVERVIEW_WHAT : d.OVERVIEW_WHAT,
+    OVERVIEW_HOW: n.OVERVIEW_HOW?.length ? n.OVERVIEW_HOW : d.OVERVIEW_HOW,
+    HOW_TO_READ: n.HOW_TO_READ?.trim() || d.HOW_TO_READ,
+    traceTitle: n.traceTitle?.trim() || d.traceTitle,
   };
 }
