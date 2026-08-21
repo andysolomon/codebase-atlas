@@ -64,6 +64,18 @@ export class Atlas extends HTMLElement {
   }
   /** Optional hook: when set, the topbar shows an OPEN REPO field and calls this with the typed value. */
   openRepo: ((query: string) => void) | null = null;
+  /** Optional hook: when set, the topbar shows a FOLDER button that opens a repository on this machine. */
+  openLocal: (() => void) | null = null;
+  /** Optional hook: when set, the topbar shows an ANALYZE button that runs AI analysis over the
+      repository currently on screen. `analyzeState` decides what the button says. */
+  analyze: (() => void) | null = null;
+  /** `idle` | `busy` | `done` | `off` — `off` greys the button out (no scanned repository to analyze). */
+  analyzeState: 'idle' | 'busy' | 'done' | 'off' = 'off';
+  /** Optional hook: the trail of repositories opened this session, and where in it we are. When set,
+      the topbar grows ◀ ▶ buttons that step through it, and the field suggests what has been typed. */
+  nav: { entries: { label: string; query?: string }[]; index: number; go: (i: number) => void } | null = null;
+  /** Redraw the topbar alone. Used to move the ANALYZE button between its states mid-run. */
+  refreshBar() { if (this.booted && this.barEl) this.paintBar(); }
 
   private D!: AtlasData;
   private byId: Record<string, Structure> = {};
@@ -77,6 +89,7 @@ export class Atlas extends HTMLElement {
   private pollIv: number | null = null;
   private onKey: ((e: KeyboardEvent) => void) | null = null;
 
+  private barEl: HTMLDivElement | null = null;
   private sideEl!: HTMLDivElement;
   private mapWrap!: HTMLDivElement;
   private panelEl!: HTMLDivElement;
@@ -133,12 +146,11 @@ export class Atlas extends HTMLElement {
   theme(): Theme { return THEMES[this.getAttribute('paper') as PaperTheme] || THEMES.tan; }
   flowOn() { return this.getAttribute('flow') !== 'false'; }
 
-  build() {
-    const T = this.theme(), D = this.D;
-    this.style.cssText = `display:grid;grid-template-rows:auto 1fr;width:100%;height:100vh;min-height:640px;background:${T.bg};color:${T.ink};font-family:${MONO};overflow:hidden;box-sizing:border-box`;
-    this.innerHTML = '';
-    // ── topbar ──
-    const bar = el('div', `display:flex;align-items:stretch;height:60px;border-bottom:1.5px solid ${T.ink};min-width:0;overflow:hidden`);
+  /** The topbar. Split out of `build` so a long-running action — a scan, an analysis — can move its
+      button between states without rebuilding the scene under it. */
+  private paintBar() {
+    const T = this.theme(), D = this.D, bar = this.barEl!;
+    bar.innerHTML = '';
     const cell = (k: string, v: string) => el('div', `padding:8px 14px;border-right:1.5px solid ${T.ink};display:flex;flex-direction:column;justify-content:space-between;flex:none`,
       `<div style="font-size:9px;letter-spacing:.16em;color:${T.dim}">${k}</div><div style="font-size:14px;white-space:nowrap">${v}</div>`);
     const statRow = el('div', 'display:flex;align-items:stretch;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none');
@@ -146,30 +158,80 @@ export class Atlas extends HTMLElement {
     statRow.appendChild(cell('REPOSITORY', esc(D.repo)));
     D.stats.forEach(([k, v]) => statRow.appendChild(cell(k, esc(v))));
     bar.appendChild(statRow);
+
+    const BTN = `font-family:${MONO};font-size:10px;letter-spacing:.12em;background:none;border:1.5px solid ${T.ink};color:${T.ink};padding:7px 11px;cursor:pointer;align-self:center;white-space:nowrap;flex:none;height:30px;box-sizing:border-box`;
+
+    if (this.nav && this.nav.entries.length > 1) {
+      const { entries, index, go } = this.nav;
+      const step = (label: string, to: number, title: string) => {
+        const b = el('button', `${BTN};padding:7px 8px;margin:0 0 0 6px${to < 0 || to >= entries.length ? ';opacity:.3;cursor:default' : ''}`, label);
+        b.title = to < 0 || to >= entries.length ? title : `${title}: ${entries[to].label}`;
+        b.disabled = to < 0 || to >= entries.length;
+        b.onclick = () => go(to);
+        return b;
+      };
+      bar.appendChild(step('◀', index - 1, 'Previous repository'));
+      bar.appendChild(step('▶', index + 1, 'Next repository'));
+    }
     if (this.openRepo) {
-      const form = el('form', `display:flex;align-items:center;gap:0;margin:0 0 0 12px;flex:none;align-self:center`);
+      const form = el('form', `display:flex;align-items:center;gap:0;margin:0 0 0 6px;flex:none;align-self:center`);
       const inp = el('input', `font-family:${MONO};font-size:10px;letter-spacing:.06em;background:none;border:1.5px solid ${T.ink};border-right:none;color:${T.ink};padding:7px 9px;width:220px;outline:none;box-sizing:border-box;height:30px`);
       inp.placeholder = 'github.com/owner/repo'; inp.spellcheck = false; inp.autocomplete = 'off';
       inp.value = this.getAttribute('repo-query') || '';
-      const go = el('button', `font-family:${MONO};font-size:10px;letter-spacing:.12em;background:${T.ink};border:1.5px solid ${T.ink};color:${T.bg};padding:7px 11px;cursor:pointer;white-space:nowrap;height:30px;box-sizing:border-box`, '⌕ OPEN REPO');
+      // Everything openable by typing is offered back as you type — no extra topbar width spent.
+      const queries = [...new Set((this.nav?.entries ?? []).map((e) => e.query).filter((x): x is string => !!x))];
+      if (queries.length) {
+        const list = el('datalist');
+        list.id = 'atlas-recent-repos';
+        queries.forEach((v) => { const o = el('option'); o.value = v; list.appendChild(o); });
+        inp.setAttribute('list', list.id);
+        form.appendChild(list);
+      }
+      const go = el('button', `${BTN};background:${T.ink};border-color:${T.ink};color:${T.bg};padding:7px 11px;margin:0`, '⌕ OPEN REPO');
       form.appendChild(inp); form.appendChild(go);
       form.onsubmit = (ev) => { ev.preventDefault(); const q = inp.value.trim(); if (q) this.openRepo!(q); };
       bar.appendChild(form);
     }
-    const fb = el('button', `font-family:${MONO};font-size:10px;letter-spacing:.12em;background:none;border:1.5px solid ${T.ink};color:${T.ink};padding:7px 11px;cursor:pointer;align-self:center;margin:0 12px;white-space:nowrap`);
+    if (this.openLocal) {
+      const lb = el('button', `${BTN};margin:0 0 0 6px`, '⌂ LOCAL FOLDER');
+      lb.title = 'Open a repository on this machine. Nothing is uploaded.';
+      lb.onclick = () => this.openLocal!();
+      bar.appendChild(lb);
+    }
+    if (this.analyze) {
+      const st = this.analyzeState;
+      const ab = el('button', `${BTN};margin:0 0 0 6px${st === 'busy' || st === 'done' ? `;background:${T.ink};border-color:${T.ink};color:${T.bg}` : ''}${st === 'off' ? ';opacity:.35;cursor:default' : ''}`,
+        st === 'busy' ? '◐ ANALYZING …' : st === 'done' ? '✦ RE-ANALYZE' : '✦ ANALYZE');
+      ab.title = st === 'off'
+        ? 'Scan a repository first — a pre-built atlas is already written.'
+        : 'Read the code with a model: blocks become concepts and the prose gets written.';
+      ab.disabled = st === 'off' || st === 'busy';
+      ab.onclick = () => { if (st !== 'off' && st !== 'busy') this.analyze!(); };
+      bar.appendChild(ab);
+    }
+
+    const fb = el('button', `${BTN};margin:0 12px`);
     const setFB = () => { fb.textContent = this.flowOn() ? '❚❚ PAUSE THE FLOW' : '▶ RESUME THE FLOW'; };
     setFB();
     fb.onclick = () => { this.setAttribute('flow', this.flowOn() ? 'false' : 'true'); setFB(); };
-    fb.style.flex = 'none';
     bar.appendChild(fb);
     // paper switch (app chrome; the prototype received `paper` from its host editor)
     const PAPERS: PaperTheme[] = ['tan', 'light', 'dark'];
-    const pb = el('button', `font-family:${MONO};font-size:10px;letter-spacing:.12em;background:none;border:1.5px solid ${T.ink};color:${T.ink};padding:7px 11px;cursor:pointer;align-self:center;margin:0 12px 0 0;white-space:nowrap;flex:none`);
+    const pb = el('button', `${BTN};margin:0 12px 0 0`);
     const cur = (this.getAttribute('paper') as PaperTheme) || 'tan';
     pb.textContent = 'PAPER · ' + (THEMES[cur] ? cur : 'tan').toUpperCase();
     pb.onclick = () => { const i = PAPERS.indexOf(THEMES[cur] ? cur : 'tan'); this.setAttribute('paper', PAPERS[(i + 1) % PAPERS.length]); };
     bar.appendChild(pb);
-    this.appendChild(bar);
+  }
+
+  build() {
+    const T = this.theme();
+    this.style.cssText = `display:grid;grid-template-rows:auto 1fr;width:100%;height:100vh;min-height:640px;background:${T.bg};color:${T.ink};font-family:${MONO};overflow:hidden;box-sizing:border-box`;
+    this.innerHTML = '';
+    // ── topbar ──
+    this.barEl = el('div', `display:flex;align-items:stretch;height:60px;border-bottom:1.5px solid ${T.ink};min-width:0;overflow:hidden`);
+    this.paintBar();
+    this.appendChild(this.barEl);
     // ── main grid ──
     const main = el('div', 'display:grid;grid-template-columns:232px minmax(0,1fr) 398px;min-height:0');
     this.sideEl = el('div', `border-right:1.5px solid ${T.ink};overflow-y:auto;padding:10px 0 24px`);

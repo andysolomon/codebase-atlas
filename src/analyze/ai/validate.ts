@@ -148,8 +148,65 @@ export function validateNarrate(out: NarrateOut, data: AtlasData, report: Report
   return units;
 }
 
-/** The overview, stats, trace and edge labels. */
-export function validateCompose(out: ComposeOut, data: AtlasData, report: Report): Narration {
+/** Case, whitespace and thousands separators are not part of a number's identity. Quotes are matched
+    after all three are flattened, so a model that re-wraps a line still gets credit for quoting it. */
+const flatten = (s: string) => s.toLowerCase().replace(/(\d),(?=\d{3}\b)/g, '$1').replace(/\s+/g, ' ').trim();
+
+/** The numeric tokens in a string. `4 + 6 dev` is two numbers, and both have to be accounted for. */
+const numbersIn = (s: string): string[] => flatten(s).match(/\d+(?:\.\d+)?/g) ?? [];
+
+/** A quote arrives wrapped in the punctuation of quoting. That is not part of what was quoted. */
+const unquote = (s: string) => s.trim().replace(/^["'\u201c\u201d\u2018\u2019`]+|["'\u201c\u201d\u2018\u2019`]+$/g, '').trim();
+
+/** The shortest quote worth calling a citation. Short is fine — "BLOCKS: 17" is a real quote — but it
+    has to carry a word as well as the digits, or the citation is just the number again. */
+const MIN_QUOTE = 8;
+
+/** Prose spells small numbers out. "The eight real planets" is a citation for 8, and refusing it
+    would throw away true stats to no benefit — the quote still had to be found in the evidence. */
+const WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen', 'twenty'];
+
+/** Is this number present in the quote — as a figure, or written out? */
+function citesNumber(quote: string, n: string): boolean {
+  if (numbersIn(quote).includes(n)) return true;
+  const i = Number(n);
+  return Number.isInteger(i) && i >= 0 && i < WORDS.length && new RegExp(`\\b${WORDS[i]}\\b`).test(quote);
+}
+
+/** Is this stat's number actually in the evidence, in the place the model says it is?
+
+    The stats are the one output nothing else can check: block prose is anchored to files that must
+    exist, trace steps to blocks that must be drawn, but a headline number is free text. So the model
+    is made to quote the evidence verbatim, and the quote is looked up. A citation that cannot be
+    found, or that does not contain the number it is offered for, is not a citation. */
+function citationHolds(value: string, quote: string, pack: string): string | null {
+  // A citation may gather more than one line — two entries from a list, a heading and its row. Each
+  // piece has to be real; they do not have to have been adjacent. Fabricated text still fails, because
+  // it is the fragments that are looked up, not the joins between them.
+  const fragments = unquote(quote).split(/\n+|\s(?:\.{3}|…)\s/)
+    .map((f) => flatten(unquote(f)))
+    .filter((f) => f.length >= MIN_QUOTE && /[a-z]/.test(f));
+  if (!fragments.length) return 'the citation was too short to check';
+
+  const flat = flatten(pack);
+  const unfound = fragments.filter((f) => !flat.includes(f));
+  if (unfound.length) return 'the quoted text is not in the evidence';
+
+  // Counting what you quoted is a citation: quote two of the things and "2" is accounted for, because
+  // both fragments were looked up. Only from two upward — otherwise every single-line quote proves 1.
+  const cited = fragments.join(' ');
+  const counted = fragments.length >= 2 ? String(fragments.length) : '';
+  const missing = numbersIn(value).filter((n) => n !== counted && !citesNumber(cited, n));
+  if (missing.length) return `the quote does not contain ${missing.join(', ')}`;
+  return null;
+}
+
+/** The overview, stats, trace and edge labels.
+
+    `pack` is the evidence the compose pass was given. Pass it and every stat is checked against it;
+    omit it and stats fall back to needing a citation without it being verified. */
+export function validateCompose(out: ComposeOut, data: AtlasData, report: Report, pack?: unknown): Narration {
   const ids = new Set(data.STRUCTURES.map((s) => s.id));
   const edgeKeys = new Set(data.EDGES.map((e) => `${e.f}->${e.t}`));
 
@@ -166,10 +223,27 @@ export function validateCompose(out: ComposeOut, data: AtlasData, report: Report
     edgeLabels[k] = clamp(e.payload, CAP.payload);
   }
 
-  // A stat with no stated source is exactly the kind of number that gets invented.
+  // The topbar already prints what the scan measured. A stat that restates it spends one of seven
+  // headline slots saying something the reader can see two inches away — and the prompt asks for
+  // facts about the system, which is a different question from facts about the file tree.
+  const RESTATED = ['lines of code', 'loc', 'source files', 'total files'];
+  const scanKeys = (data.stats ?? []).map(([k]) => k.toLowerCase().trim()).filter(Boolean);
+  const restatesScan = (key: string) => {
+    const k = key.toLowerCase().trim();
+    return RESTATED.includes(k) || scanKeys.some((sk) => k === sk || new RegExp(`\\b${sk.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(k));
+  };
+
+  // A stat with no stated source is exactly the kind of number that gets invented — and a stated
+  // source nobody looks up is the same number wearing a citation.
+  const packText = pack == null ? '' : typeof pack === 'string' ? pack : Object.values(pack as Record<string, unknown>).filter((v) => typeof v === 'string').join('\n');
   const stats: [string, string][] = [];
   for (const s of out.stats.slice(0, 7)) {
     if (!s.evidence?.trim()) { report.dropped.push(`stat "${s.key}" cited no evidence`); continue; }
+    if (restatesScan(s.key)) { report.dropped.push(`stat "${s.key}" restates what the scan already prints`); continue; }
+    if (packText) {
+      const wrong = citationHolds(s.value, s.evidence, packText);
+      if (wrong) { report.dropped.push(`stat "${s.key}" = "${s.value}": ${wrong}`); continue; }
+    }
     stats.push([clamp(s.key, CAP.statKey).toUpperCase(), clamp(s.value, CAP.statValue)]);
   }
 

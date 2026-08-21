@@ -14,6 +14,7 @@ import type { Narration, Partition, RepoSource } from '../types';
 import { blockEvidence, composeEvidence, repoEvidence } from './evidence';
 import type { ComposeOut, NarrateOut, PartitionOut } from './schemas';
 import { statEvidence, validateCompose, validateNarrate, validatePartition, type Report } from './validate';
+import { atlasKey, drop, fingerprint, passKey, read, write } from './browser-cache';
 
 export const ENRICH_ENDPOINT = '/api/enrich';
 
@@ -22,6 +23,12 @@ export interface EnrichClientOptions {
   batchSize?: number;
   signal?: AbortSignal;
   onProgress?: (message: string) => void;
+  /** Ignore anything cached and ask again — the `--no-cache` of the browser. */
+  refresh?: boolean;
+  /** Ask the endpoint for its declared fallback model. Costs money, so it is never set by default:
+      it is what the person clicks when a run came back rate-limited. Passes already answered by any
+      model are reused, so this buys only the holes. */
+  useFallback?: boolean;
 }
 
 export interface EnrichClientResult {
@@ -29,23 +36,68 @@ export interface EnrichClientResult {
   report: Report;
   fallbacks: string[];
   evidence: string[];
+  /** True when the whole map came out of the cache and no model was called at all. */
+  cached: boolean;
+  /** Which models actually wrote this map. Empty when it came from cache without a recorded model. */
+  models: string[];
+  /** A pass failed because a provider said no, rather than because the answer was unusable. */
+  rateLimited: boolean;
+  /** The model this deployment would finish the work on, if asked. Empty when it offers none. */
+  fallbackModel: string;
 }
+
+/** What the endpoint says it would run, asked once per analysis. A GET spends nothing. */
+interface ServerModels { model: string; fallback: string; prompts: string }
+const NO_SERVER: ServerModels = { model: '', fallback: '', prompts: '' };
+
+async function serverModels(endpoint: string, signal?: AbortSignal): Promise<ServerModels> {
+  try {
+    const r = await fetch(endpoint, { method: 'GET', ...(signal ? { signal } : {}) });
+    if (!r.ok) return NO_SERVER;
+    const b = (await r.json()) as Partial<ServerModels>;
+    const str = (v: unknown) => (typeof v === 'string' ? v : '');
+    return { model: str(b.model), fallback: str(b.fallback), prompts: str(b.prompts) };
+  } catch {
+    return NO_SERVER;   // an older deployment, or none at all
+  }
+}
+
+/** A provider refusing on quota is not a bad answer — it is the same answer, later. Worth telling
+    apart, because it is the one failure a different model can fix. */
+const isRefusal = (m: string) => /rate.?limit|free tier|quota|\b429\b|credits?/i.test(m);
+
+interface CachedPass { model: string; value: unknown }
+interface CachedAtlas { primary: string; models: string[]; data: AtlasData }
 
 /** Roughly one block per eight files, held inside what the map can draw legibly. */
 const blockTarget = (files: number) => Math.max(8, Math.min(24, Math.round(files / 8)));
 
 class PassError extends Error {}
 
-async function callPass<T>(endpoint: string, pass: string, evidence: unknown, signal?: AbortSignal): Promise<T> {
+/** The sentence out of a failed reply, rather than the JSON it arrived in. */
+async function reason(r: Response): Promise<string> {
+  const text = (await r.text()).slice(0, 400);
+  try {
+    const j = JSON.parse(text) as { error?: unknown };
+    if (typeof j.error === 'string' && j.error) return j.error;
+  } catch { /* not JSON — an HTML error page, or nothing at all */ }
+  return text.trim().slice(0, 200) || r.statusText;
+}
+
+/** Which model the endpoint used, as it reported it. Set on the first pass that comes back. */
+let servedBy = '';
+
+async function callPass<T>(endpoint: string, pass: string, evidence: unknown, signal?: AbortSignal, fallback?: boolean): Promise<T> {
   const r = await fetch(endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ pass, evidence }),
+    body: JSON.stringify({ pass, evidence, ...(fallback ? { fallback: true } : {}) }),
     ...(signal ? { signal } : {}),
   });
-  if (!r.ok) throw new PassError(`${r.status} ${(await r.text()).slice(0, 200) || r.statusText}`);
-  const body = (await r.json()) as { ok: boolean; value?: T; error?: string };
+  if (!r.ok) throw new PassError(`${r.status} ${await reason(r)}`);
+  const body = (await r.json()) as { ok: boolean; value?: T; error?: string; model?: string };
   if (!body.ok || body.value == null) throw new PassError(body.error || 'the model returned nothing usable');
+  if (body.model) servedBy = body.model;
   return body.value;
 }
 
@@ -56,15 +108,50 @@ export async function enrichInBrowser(source: RepoSource, opts: EnrichClientOpti
   const say = opts.onProgress ?? (() => {});
   const report: Report = { dropped: [], notes: [] };
   const fallbacks: string[] = [];
+  servedBy = '';
+
+  const models = await serverModels(endpoint, opts.signal);
+  const primary = models.model;
+  const wanted = opts.useFallback && models.fallback ? models.fallback : primary;
+  const fp = fingerprint(source);
+  const version = models.prompts || 'unversioned';
+  const aKey = atlasKey(fp, version);
+  const spent = new Set<string>();
+  const usedModels = new Set<string>();
+  const base = () => ({ cached: false, models: [...usedModels], rateLimited: fallbacks.some(isRefusal), fallbackModel: models.fallback });
+
+  // Already analysed, unchanged, by the model this deployment still runs: hand it back and call nobody.
+  if (!opts.refresh) {
+    const hit = read<CachedAtlas>(aKey);
+    if (hit?.data && hit.primary === primary) {
+      say('already analysed');
+      return { data: hit.data, report, fallbacks: [], evidence: [], cached: true, models: hit.models ?? [], rateLimited: false, fallbackModel: models.fallback };
+    }
+  }
+
+  /** One pass, bought once. A cached answer counts when it came from the model this run wants — or
+      from any model at all when the point of this run is to finish work already partly paid for. */
+  const pass = async <T>(name: string, evidence: unknown): Promise<T> => {
+    const key = passKey(name, evidence, version);
+    if (!opts.refresh) {
+      const hit = read<CachedPass>(key);
+      if (hit && (hit.model === wanted || opts.useFallback)) { spent.add(key); usedModels.add(hit.model); return hit.value as T; }
+    }
+    const value = await callPass<T>(endpoint, name, evidence, opts.signal, opts.useFallback);
+    write(key, { model: servedBy || wanted, value } satisfies CachedPass);
+    spent.add(key);
+    usedModels.add(servedBy || wanted);
+    return value;
+  };
 
   let partition: Partition | undefined;
   let product: string | undefined;
 
   say('reading the repository');
   try {
-    const out = await callPass<PartitionOut>(endpoint, 'partition', {
+    const out = await pass<PartitionOut>('partition', {
       ...repoEvidence(source), blockTarget: blockTarget(source.files.length),
-    }, opts.signal);
+    });
     const v = validatePartition(out, source.files);
     report.dropped.push(...v.report.dropped);
     report.notes.push(...v.report.notes);
@@ -75,7 +162,7 @@ export async function enrichInBrowser(source: RepoSource, opts: EnrichClientOpti
   }
 
   let data = buildAtlas(source, partition ? { partition } : {});
-  if (!partition) return { data, report, fallbacks, evidence: [] };
+  if (!partition) return { data, report, fallbacks, evidence: [], ...base() };
 
   say(`describing ${data.STRUCTURES.length} blocks`);
   const blocks = blockEvidence(source, data);
@@ -84,7 +171,7 @@ export async function enrichInBrowser(source: RepoSource, opts: EnrichClientOpti
   for (let i = 0; i < blocks.length; i += size) batches.push(blocks.slice(i, i + size));
 
   const settled = await Promise.all(batches.map((b) =>
-    callPass<NarrateOut>(endpoint, 'narrate', b, opts.signal).catch((e: Error) => e)));
+    pass<NarrateOut>('narrate', b).catch((e: Error) => e)));
 
   const units: NonNullable<Narration['units']> = [];
   for (const r of settled) {
@@ -96,8 +183,9 @@ export async function enrichInBrowser(source: RepoSource, opts: EnrichClientOpti
   let narration: Narration = { units, ...(product ? { product } : {}) };
   let evidence: string[] = [];
   try {
-    const out = await callPass<ComposeOut>(endpoint, 'compose', composeEvidence(source, data), opts.signal);
-    narration = { ...validateCompose(out, data, report), ...narration };
+    const packed = composeEvidence(source, data);
+    const out = await pass<ComposeOut>('compose', packed);
+    narration = { ...validateCompose(out, data, report, packed), ...narration };
     evidence = statEvidence(out);
   } catch (e) {
     fallbacks.push(`compose: ${(e as Error).message}`);
@@ -105,9 +193,17 @@ export async function enrichInBrowser(source: RepoSource, opts: EnrichClientOpti
 
   data = buildAtlas(source, { partition, narration });
   data.provenance = {
-    models: { server: 'set by the enrich endpoint' },
+    models: { server: [...usedModels].join(' + ') || servedBy || 'set by the enrich endpoint' },
     generatedAt: new Date().toISOString(),
     ...(fallbacks.length ? { fallbacks } : {}),
   };
-  return { data, report, fallbacks, evidence };
+
+  // A map with no holes in it collapses to one entry and its passes are released. A map with holes
+  // keeps its passes instead, so the next attempt — on this model or the fallback — buys only the
+  // holes, and is not cached whole: it is not the finished thing.
+  if (!fallbacks.length) {
+    write(aKey, { primary, models: [...usedModels], data } satisfies CachedAtlas);
+    spent.forEach(drop);
+  }
+  return { data, report, fallbacks, evidence, ...base() };
 }

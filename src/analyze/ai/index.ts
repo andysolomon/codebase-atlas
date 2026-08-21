@@ -201,7 +201,7 @@ export async function enrichAtlas(source: RepoSource, opts: EnrichOptions = {}):
   let narration: Narration = { units, ...(product ? { product } : {}) };
   let evidence: string[] = [];
   if (p3.value) {
-    narration = { ...validateCompose(p3.value, data, report), ...narration };
+    narration = { ...validateCompose(p3.value, data, report, composeEvidence(source, data)), ...narration };
     evidence = statEvidence(p3.value);
   } else {
     fallbacks.push(`compose: ${p3.error ?? 'no result'}`);

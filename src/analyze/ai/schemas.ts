@@ -40,7 +40,7 @@ export const ComposeOut = z.object({
   stats: z.array(z.object({
     key: z.string().describe('Caps label, e.g. WORLD TYPES.'),
     value: z.string(),
-    evidence: z.string().describe('Where in the evidence this number came from. A stat without this is discarded.'),
+    evidence: z.string().describe('A VERBATIM quote, copied exactly from the evidence above, containing this number. Checked against the evidence: a stat whose quote is not found there, or whose quote does not contain the number, is discarded.'),
   })),
   traceTitle: z.string().describe('Caps label for the journey, e.g. ONE SLIDER DRAG.'),
   trace: z.array(z.object({
