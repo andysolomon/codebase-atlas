@@ -83,8 +83,16 @@ vercel link && vercel env pull        # OIDC, no long-lived key to rotate — pr
 export AI_GATEWAY_API_KEY=...         # or a gateway key, for CI or an unlinked machine
 ```
 
-To try it with no Vercel setup at all, `--model minimax-direct/MiniMax-M3` talks to MiniMax's
-Anthropic-compatible endpoint and needs only `MINIMAX_API_KEY`.
+`vercel env pull` writes a `VERCEL_OIDC_TOKEN` into `.env.local`, which Bun loads automatically — so
+`bun run atlas . --ai` works straight after linking, with no key to manage.
+
+**The Gateway's free tier will not carry a whole atlas.** One call gets through and the rest come back
+rate-limited, and lowering `--concurrency` does not help — the allowance is the limit, not the burst.
+Add credits to the AI Gateway before relying on it.
+
+To run with no Vercel setup at all, `--model minimax-direct/MiniMax-M3` talks to MiniMax's
+Anthropic-compatible endpoint and needs only `MINIMAX_API_KEY`. That is the path the numbers below
+were measured on.
 
 #### Examples
 
@@ -96,6 +104,7 @@ bun run atlas owner/repo --ai                       # any public GitHub repo
 bun run atlas . --ai --dry-run                      # token estimate; makes no calls, needs no key
 bun run atlas . --ai --explain                      # print where every headline number came from
 bun run atlas . --ai --no-cache                     # ignore .atlas-cache and re-ask
+bun run atlas . --ai --concurrency 1                # one call at a time, for a twitchy provider
 
 bun run atlas . --ai --model spacexai/grok-4.6      # any AI Gateway model id
 bun run atlas . --ai --model minimax/minimax-m3 \
@@ -187,11 +196,34 @@ own file list, so the server never sees the repository — only a pack of named 
 
 The endpoint accepts a known pass name and a whitelist of named fields at bounded sizes, and returns
 only atlas-shaped JSON. There is no free-text field and the client cannot choose the model, so it is
-not usable as a general LLM proxy. **Put a Vercel Firewall rate-limit rule in front of `/api/enrich`
-before deploying it publicly** — it spends money on behalf of anyone who loads the page. Set
-`ATLAS_ENRICH_MODEL` to pin the model it uses.
+not usable as a general LLM proxy. Set `ATLAS_ENRICH_MODEL` to pin the model it uses.
 
 Nothing under `src/` imports `ai` or `zod`, so the browser bundle stays dependency-free.
+
+#### Deploying it
+
+The endpoint calls a model for anyone who loads the page, so it wants a rate limit as well as its
+own shape. `scripts/firewall.sh` stages one:
+
+```sh
+vercel link                    # once
+./scripts/firewall.sh          # stages: 60 requests / 300s per IP on /api/enrich, in LOG mode
+vercel firewall diff           # read what changed
+vercel firewall publish --yes  # you publish; nothing is live until you do
+```
+
+Sixty requests in five minutes is about ten atlases from one address — one atlas is roughly six
+requests (a partition, up to four narrate batches, a compose). It starts in **log** mode so it counts
+without blocking. Watch the traffic, then enforce:
+
+```sh
+./scripts/firewall.sh --tighten   # same rule, now returning 429 over the limit
+vercel firewall publish --yes
+```
+
+Also set `AI_GATEWAY_API_KEY` on the project, or leave it unset and let the function use its OIDC
+token. Until one of those is in place `/api/enrich` returns 502 and the browser simply keeps the
+templated map.
 
 ### How the scan becomes a map
 

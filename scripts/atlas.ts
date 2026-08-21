@@ -59,7 +59,8 @@ async function main() {
   const target = args.find((a) => !a.startsWith('-'));
   if (!target || args.includes('-h') || args.includes('--help')) {
     console.log('usage: bun run atlas <path | github-url | owner/repo[@ref]> [-o out.json] [--stdout]');
-    console.log('       [--ai] [--model <id>] [--model-partition <id>] [--dry-run] [--explain] [--no-cache]');
+    console.log('       [--ai] [--model <id>] [--model-partition <id>] [--concurrency <n>]');
+    console.log('       [--dry-run] [--explain] [--no-cache]');
     process.exit(target ? 0 : 1);
   }
   const flag = (name: string) => { const i = args.indexOf(name); return i >= 0 && args[i + 1] && !args[i + 1].startsWith('-') ? args[i + 1] : null; };
@@ -69,6 +70,7 @@ async function main() {
   const dryRun = args.includes('--dry-run');
   const explain = args.includes('--explain');
   const model = flag('--model') ?? DEFAULT_MODEL;
+  const concurrency = Number(flag('--concurrency')) || undefined;
   const partitionModel = flag('--model-partition') ?? model;
   const log = (m: string) => { if (!toStdout) process.stderr.write(m + '\n'); };
 
@@ -111,7 +113,7 @@ async function main() {
   let atlas = buildAtlas(src);
   if (useAi) {
     const r = await enrichAtlas(src, {
-      model, partitionModel, useCache: !args.includes('--no-cache'), onProgress: log,
+      model, partitionModel, concurrency, useCache: !args.includes('--no-cache'), onProgress: log,
     });
     atlas = r.data;
     if (r.usage.input || r.usage.output) {
@@ -123,7 +125,10 @@ async function main() {
       for (const d of r.report.dropped.slice(0, 8)) log(`    - ${d}`);
       if (r.report.dropped.length > 8) log(`    - and ${r.report.dropped.length - 8} more`);
     }
-    for (const f of r.fallbacks) log(`  fell back to templated prose - ${f}`);
+    // The same provider failure usually hits several passes; say it once with a count.
+    const seen = new Map<string, number>();
+    for (const f of r.fallbacks) seen.set(f, (seen.get(f) ?? 0) + 1);
+    for (const [f, n] of seen) log(`  fell back to templated prose${n > 1 ? ` (${n} passes)` : ''} - ${f}`);
     if (explain) {
       log('  headline numbers and where they came from:');
       for (const e of r.evidence) log(`    ${e}`);
