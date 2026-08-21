@@ -1,7 +1,7 @@
 /** Cheap, regex-based extraction of what a file declares. Good enough to tell an LLM what a
     module is for — "sanitize, defaults, clamp" says far more per token than "9 KB of TypeScript". */
 
-import { extOf } from './ignore';
+import { extOf } from './ignore.js';
 
 const JS = [
   /\bexport\s+(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/g,

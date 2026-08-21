@@ -14,7 +14,7 @@
 
     localStorage rather than IndexedDB: a few maps, synchronous reads, and no schema to migrate. */
 
-import type { RepoFile, RepoSource } from '../types';
+import type { RepoFile, RepoSource } from '../types.js';
 
 const PREFIX = 'codebase-atlas:ai:';
 /** Roughly what a 5 MB origin quota leaves for maps, once everything else has its share. */

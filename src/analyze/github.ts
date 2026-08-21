@@ -1,7 +1,7 @@
 /** Loads a public (or token-authorised) GitHub repository as a RepoSource, in the browser or in Bun/Node. */
 
-import { CONTEXT_FILE, isCode, isIgnoredPath } from './ignore';
-import type { OnProgress, RepoFile, RepoSource } from './types';
+import { CONTEXT_FILE, isCode, isIgnoredPath } from './ignore.js';
+import type { OnProgress, RepoFile, RepoSource } from './types.js';
 
 export interface GitHubRef { owner: string; repo: string; ref?: string }
 

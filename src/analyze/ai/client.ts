@@ -8,13 +8,13 @@
     Three small round trips rather than one large one: the second pass cannot be built until the first
     has changed what the blocks are. */
 
-import type { AtlasData } from '../../atlas/types';
-import { buildAtlas } from '../build';
-import type { Narration, Partition, RepoSource } from '../types';
-import { blockEvidence, composeEvidence, repoEvidence } from './evidence';
-import type { ComposeOut, NarrateOut, PartitionOut } from './schemas';
-import { statEvidence, validateCompose, validateNarrate, validatePartition, type Report } from './validate';
-import { atlasKey, drop, fingerprint, passKey, read, write } from './browser-cache';
+import type { AtlasData } from '../../atlas/types.js';
+import { buildAtlas } from '../build.js';
+import type { Narration, Partition, RepoSource } from '../types.js';
+import { blockEvidence, composeEvidence, repoEvidence } from './evidence.js';
+import type { ComposeOut, NarrateOut, PartitionOut } from './schemas.js';
+import { statEvidence, validateCompose, validateNarrate, validatePartition, type Report } from './validate.js';
+import { atlasKey, drop, fingerprint, passKey, read, write } from './browser-cache.js';
 
 export const ENRICH_ENDPOINT = '/api/enrich';
 

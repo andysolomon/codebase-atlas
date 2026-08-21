@@ -10,8 +10,8 @@
     Either way the files stay in the tab. Nothing is uploaded: the scan runs here, and AI analysis
     sends only the evidence packs the browser builds. */
 
-import { CONTEXT_FILE, IGNORED_DIRS, isCode, isIgnoredPath } from './ignore';
-import type { OnProgress, RepoFile, RepoSource } from './types';
+import { CONTEXT_FILE, IGNORED_DIRS, isCode, isIgnoredPath } from './ignore.js';
+import type { OnProgress, RepoFile, RepoSource } from './types.js';
 
 export interface LocalOptions {
   /** Max code files whose content is read for import analysis. Default 400. */

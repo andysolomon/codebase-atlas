@@ -4,9 +4,9 @@
     and bound what is real, so one verbose answer cannot overrun a card that has room for three
     sentences. Anything dropped is reported, never silently accepted. */
 
-import type { AtlasData } from '../../atlas/types';
-import type { Narration, Partition, RepoFile, UnitSpec } from '../types';
-import type { ComposeOut, NarrateOut, PartitionOut } from './schemas';
+import type { AtlasData } from '../../atlas/types.js';
+import type { Narration, Partition, RepoFile, UnitSpec } from '../types.js';
+import type { ComposeOut, NarrateOut, PartitionOut } from './schemas.js';
 
 /** Room on the drawn card, in characters. Measured against the hand-written arc-worlds dataset. */
 const CAP = {

@@ -1,6 +1,6 @@
 /** Cheap, regex-based import extraction for the languages we care about. Good enough to draw edges. */
 
-import { extOf } from './ignore';
+import { extOf } from './ignore.js';
 
 export interface ImportRef {
   /** The raw specifier as written ("./foo", "@/lib/x", "react", "os.path"). */

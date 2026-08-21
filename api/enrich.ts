@@ -9,10 +9,10 @@
     storage, and it survives the function being cold. */
 
 import { createHash } from 'node:crypto';
-import { buildComposePrompt, buildNarratePrompt, buildPartitionPrompt } from '../src/analyze/ai/index';
-import { COMPOSE, NARRATE, PARTITION, SYSTEM } from '../src/analyze/ai/prompts';
-import { credentialStatus, runPass } from '../src/analyze/ai/provider';
-import { ComposeOut, NarrateOut, PartitionOut } from '../src/analyze/ai/schemas';
+import { buildComposePrompt, buildNarratePrompt, buildPartitionPrompt } from '../src/analyze/ai/index.js';
+import { COMPOSE, NARRATE, PARTITION, SYSTEM } from '../src/analyze/ai/prompts.js';
+import { credentialStatus, runPass } from '../src/analyze/ai/provider.js';
+import { ComposeOut, NarrateOut, PartitionOut } from '../src/analyze/ai/schemas.js';
 
 /** The client may not choose the model — that is how a public endpoint stays affordable. It is told
     which one ran, though: a card written by a cheap model should be read as one. */
