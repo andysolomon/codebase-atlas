@@ -7,7 +7,7 @@
    Data is supplied via the `data` property (or window.ATLAS_DATA as a fallback). */
 
 import type { AtlasData, PaperTheme, Structure, Theme } from './types';
-import { AtlasScene, MONO } from './scene';
+import { AtlasScene, MONO, edgeKey } from './scene';
 import type { Projection, SceneBlock, SceneEdge, SceneExternal } from './scene';
 
 export { MONO };
@@ -47,7 +47,7 @@ export class Atlas extends HTMLElement {
     if (!d || !this.isConnected) return;
     if (!this.booted) { this.bootIfReady(); return; }
     // Swap datasets in place: reset view state and rebuild.
-    this.sel = null; this.inside = null; this.traceI = -1;
+    this.sel = null; this.selEdge = null; this.inside = null; this.traceI = -1;
     this.D = d; this.byId = {}; d.STRUCTURES.forEach((s) => { this.byId[s.id] = s; });
     this.setHash('');
     this.build();
@@ -70,6 +70,8 @@ export class Atlas extends HTMLElement {
   private D!: AtlasData;
   private byId: Record<string, Structure> = {};
   private sel: string | null = null;
+  /** A selected import, keyed by its endpoints (see `edgeKey`). Never set at the same time as `sel`. */
+  private selEdge: string | null = null;
   private inside: string | null = null;
   private traceI = -1;
   private booted = false;
@@ -87,11 +89,12 @@ export class Atlas extends HTMLElement {
   private compassEl: HTMLElement | null = null;
   private projEl: HTMLButtonElement | null = null;
   private hoveredEdge: SceneEdge | null = null;
+  private edgeByKey: Record<string, SceneEdge> = {};
   /** FLAT (orthographic, the drafting look) or DEEP (perspective). Survives rebuilds and theme changes. */
   private projection: Projection = 'flat';
 
   connectedCallback() {
-    this.sel = null; this.inside = null; this.traceI = -1;
+    this.sel = null; this.selEdge = null; this.inside = null; this.traceI = -1;
     this.bootIfReady();
   }
   private bootIfReady() {
@@ -111,13 +114,14 @@ export class Atlas extends HTMLElement {
     this.D = d;
     this.byId = {}; this.D.STRUCTURES.forEach((s) => { this.byId[s.id] = s; });
     this.build();
-    const m = (location.hash || '').match(/#(inside|trace)=([\w-]+)/);
+    const m = (location.hash || '').match(/#(inside|trace|edge)=([\w,-]+)/);
     if (m) {
       if (m[1] === 'inside' && this.byId[m[2]]) this.goInside(m[2], true);
       else if (m[1] === 'trace') { this.traceI = Math.max(0, Math.min(this.D.TRACE.length - 1, parseInt(m[2], 10) || 0)); this.applyTrace(); }
+      else if (m[1] === 'edge') { const [f, t] = m[2].split(','); if (this.edgeByKey[edgeKey({ f, t })]) this.selectEdge(edgeKey({ f, t }), true); }
     }
     this.onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { if (this.inside) this.comeOut(); else if (this.traceI >= 0) this.endTrace(); else { this.sel = null; this.syncUI(); } }
+      if (e.key === 'Escape') { if (this.inside) this.comeOut(); else if (this.traceI >= 0) this.endTrace(); else { this.clearSelection(); } }
       else if (e.key === 'ArrowRight' && this.traceI >= 0) this.stepTrace(1);
       else if (e.key === 'ArrowLeft' && this.traceI >= 0) this.stepTrace(-1);
     };
@@ -279,8 +283,9 @@ export class Atlas extends HTMLElement {
     const blockById: Record<string, SceneBlock> = {}; blocks.forEach((b) => { blockById[b.id] = b; });
     const edges: SceneEdge[] = [];
     const externals: SceneExternal[] = [];
+    this.edgeByKey = {};
     if (!this.inside) {
-      D.EDGES.forEach((e) => { const f = blockById[e.f], t = blockById[e.t]; if (f && t) edges.push({ e, f, t }); });
+      D.EDGES.forEach((e) => { const f = blockById[e.f], t = blockById[e.t]; if (f && t) { const se = { e, f, t }; edges.push(se); this.edgeByKey[edgeKey(e)] = se; } });
       (D.EXTERNALS || []).forEach((x) => { const t = blockById[x.t]; if (t) externals.push({ x, t }); });
     }
 
@@ -294,13 +299,18 @@ export class Atlas extends HTMLElement {
         if (!e) { if (this.hoveredEdge) { this.hoveredEdge = null; this.tipHide(); } return; }
         if (e === this.hoveredEdge) { this.tipMove(ev); return; }
         this.hoveredEdge = e;
-        this.tip(ev, `<b>${esc(e.f.name)} → ${esc(e.t.name)}</b><br>${esc(e.e.pay || '')}`);
+        this.tip(ev, `<b>${esc(e.f.name)} → ${esc(e.t.name)}</b><br>${esc(e.e.pay || '')}<br><i style="color:${T.dim}">click to read the relationship</i>`);
       },
-      onClick: (b) => {
-        if (b) { this.select(b.id); return; }
-        this.sel = null; if (this.traceI >= 0) this.endTrace(); else this.syncUI();
+      onClick: ({ block, edge }) => {
+        if (block) this.select(block.id);
+        else if (edge) this.selectEdge(edgeKey(edge.e));
+        else if (this.traceI >= 0) this.endTrace();
+        else this.clearSelection();
       },
-      onDblClick: (b) => { if (b.enterable) this.goInside(b.id); else if (this.sel !== b.id) this.select(b.id); },
+      onDblClick: ({ block, edge }) => {
+        if (block) { if (block.enterable) this.goInside(block.id); else if (this.sel !== block.id) this.select(block.id); }
+        else if (edge && this.selEdge !== edgeKey(edge.e)) this.selectEdge(edgeKey(edge.e));
+      },
       onView: (turn, proj) => {
         if (this.compassEl) this.compassEl.style.transform = `rotate(${(-turn * 180 / Math.PI).toFixed(1)}deg)`;
         if (this.projEl) this.projEl.textContent = proj === 'flat' ? '▱ FLAT' : '◇ DEEP';
@@ -376,7 +386,7 @@ export class Atlas extends HTMLElement {
     tipBox.innerHTML = [
       `<div style="font-size:9px;letter-spacing:.18em;margin-bottom:6px">MOUSE</div>`,
       row('DRAG', 'pan'), row('RIGHT-DRAG', 'rotate &amp; tilt'), row('CTRL + DRAG', 'rotate &amp; tilt'), row('WHEEL', 'zoom at the cursor'),
-      row('CLICK', 'select'), row('DOUBLE-CLICK', 'go inside'),
+      row('CLICK', 'select a block, or an import to read it'), row('DOUBLE-CLICK', 'go inside · a line frames both ends'),
       `<div style="font-size:9px;letter-spacing:.18em;margin:8px 0 6px">TOUCH</div>`,
       row('ONE FINGER', 'pan'), row('TWO FINGERS', 'pinch to zoom, twist to turn'),
       `<div style="font-size:9px;letter-spacing:.18em;margin:8px 0 6px">KEYBOARD (MAP FOCUSED)</div>`,
@@ -410,14 +420,32 @@ export class Atlas extends HTMLElement {
   // ───────────────────────── state ─────────────────────────
   select(id: string, fromTrace?: boolean) {
     if (!fromTrace && this.traceI >= 0) { this.traceI = -1; this.setHash(''); }
+    if (this.selEdge) { this.selEdge = null; this.setHash(''); }
     this.sel = (this.sel === id && !fromTrace) ? null : id;
+    this.syncUI();
+  }
+  /** Select an import by its key. Clicking the selected one again lets go of it. */
+  selectEdge(key: string, silent?: boolean) {
+    if (this.traceI >= 0) this.traceI = -1;
+    this.sel = null;
+    this.selEdge = this.selEdge === key ? null : key;
+    if (!silent) { const e = this.selEdge ? this.edgeByKey[this.selEdge] : null; this.setHash(e ? `#edge=${e.e.f},${e.e.t}` : ''); }
+    this.syncUI();
+  }
+  /** Nothing picked out: no block, no import, no trace. */
+  clearSelection() {
+    const had = this.selEdge || this.traceI >= 0;
+    this.sel = null; this.selEdge = null;
+    if (had) this.setHash('');
     this.syncUI();
   }
   syncUI() { this.paintSel(); this.renderPanel(); }
   paintSel() {
     const T = this.theme();
-    const traceIds = this.traceI >= 0 ? [this.D.TRACE[this.traceI][0]] : null;
-    this.scene?.setSelection(this.sel, traceIds);
+    const edge = this.selEdge ? this.edgeByKey[this.selEdge] : null;
+    // a trace dims to its step; a selected import dims to its two ends
+    const keep = this.traceI >= 0 ? [this.D.TRACE[this.traceI][0]] : edge ? [edge.e.f, edge.e.t] : null;
+    this.scene?.setSelection(this.sel, keep, edge ? this.selEdge : null);
     if (this.rowEls) for (const id in this.rowEls) {
       const r = this.rowEls[id], on = this.sel === id;
       r.style.background = on ? T.ink : ''; r.style.color = on ? T.bg : '';
@@ -426,7 +454,7 @@ export class Atlas extends HTMLElement {
   }
   setHash(h: string) { try { history.replaceState(null, '', location.pathname + location.search + (h || '#')); } catch { /* noop */ } }
   goInside(id: string, silent?: boolean) {
-    this.inside = id; this.sel = null; this.traceI = -1;
+    this.inside = id; this.sel = null; this.selEdge = null; this.traceI = -1;
     if (!silent) this.setHash('#inside=' + id);
     this.renderScene(); this.renderPanel();
   }
@@ -436,9 +464,9 @@ export class Atlas extends HTMLElement {
     if (!silent) this.setHash('');
     this.renderScene(); this.renderPanel();
   }
-  startTrace() { if (this.inside) this.comeOut(true); this.traceI = 0; this.applyTrace(); }
+  startTrace() { if (this.inside) this.comeOut(true); this.selEdge = null; this.traceI = 0; this.applyTrace(); }
   stepTrace(d: number) { this.traceI = Math.max(0, Math.min(this.D.TRACE.length - 1, this.traceI + d)); this.applyTrace(); }
-  endTrace() { this.traceI = -1; this.sel = null; this.setHash(''); this.syncUI(); }
+  endTrace() { this.traceI = -1; this.sel = null; this.selEdge = null; this.setHash(''); this.syncUI(); }
   applyTrace() { const st = this.D.TRACE[this.traceI]; this.sel = st[0]; this.setHash('#trace=' + this.traceI); this.syncUI(); this.scene?.focus(st[0]); }
 
   // ───────────────────────── right panel ─────────────────────────
@@ -465,6 +493,30 @@ export class Atlas extends HTMLElement {
       (Pn.querySelector('#tPrev') as HTMLButtonElement).onclick = () => this.stepTrace(-1);
       (Pn.querySelector('#tNext') as HTMLButtonElement).onclick = () => this.stepTrace(1);
       (Pn.querySelector('#tEnd') as HTMLButtonElement).onclick = () => this.endTrace();
+      return;
+    }
+    const edge = this.selEdge ? this.edgeByKey[this.selEdge] : null;
+    if (edge) {
+      // an import: where it comes from, where it goes, and what travels along it
+      const { f, t } = edge, e = edge.e;
+      const sf = this.byId[f.id], st = this.byId[t.id];
+      const endBtn = (s: Structure) => `<button data-id="${s.id}" style="${btn};display:flex;align-items:baseline;gap:10px;width:100%;text-align:left"><span style="font-size:15px;font-weight:700;border:1.5px solid ${T.ink};padding:0 6px">${s.code}</span><span style="flex:1;font-size:12px;font-weight:700">${esc(s.name)}</span><span style="font-size:9px;color:${T.dim};white-space:nowrap">${esc(s.loc.split('·')[1] || s.loc)}</span></button>`;
+      Pn.innerHTML = `
+        <button id="pBack" style="border:none;background:none;color:${T.dim};font-family:${MONO};font-size:10px;letter-spacing:.14em;cursor:pointer;padding:0">← OVERVIEW</button>
+        <div style="font-size:9px;letter-spacing:.18em;color:${T.dim};margin:14px 0 6px">${e.dashed ? 'LOOSE LINK' : 'IMPORT'}${e.flow ? ' · CARRIES THE FLOW' : ''}</div>
+        <div style="font-size:19px;font-weight:700;line-height:1.25">${esc(f.name)} <span style="color:${T.dim}">→</span> ${esc(t.name)}</div>
+        ${this.hRule('WHAT TRAVELS')}
+        <div style="font-size:13px;line-height:1.75;border-left:3px solid ${T.ink};padding-left:13px">${e.pay ? this.rich(e.pay) : `<span style="color:${T.dim}">The scan saw the import but nothing names what it carries.</span>`}</div>
+        ${this.hRule('FROM')}
+        <div id="pEnds">${sf ? endBtn(sf) : ''}</div>
+        ${this.hRule('TO')}
+        <div id="pEnds2">${st ? endBtn(st) : ''}</div>
+        ${e.dashed ? `<div style="margin-top:14px;font-size:10.5px;line-height:1.6;color:${T.dim}">Dashed means the link is optional, lazy, or a type-only import: nothing runs through it at start-up.</div>` : ''}
+        <button id="pFocus" style="${btn};margin-top:22px;width:100%">⌖ FRAME BOTH ENDS</button>
+        <div style="margin-top:14px;font-size:9px;letter-spacing:.12em;color:${T.dim}">DOUBLE-CLICK THE LINE FRAMES IT · ESC LETS GO</div>`;
+      (Pn.querySelector('#pBack') as HTMLButtonElement).onclick = () => this.clearSelection();
+      (Pn.querySelector('#pFocus') as HTMLButtonElement).onclick = () => this.scene?.focusEdge(this.selEdge!);
+      Pn.querySelectorAll<HTMLButtonElement>('#pEnds button, #pEnds2 button').forEach((b) => { b.onclick = () => { this.select(b.dataset.id!); this.scene?.focus(b.dataset.id!); }; });
       return;
     }
     const cur: ViewStruct | undefined = this.sel
