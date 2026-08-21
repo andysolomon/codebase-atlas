@@ -78,7 +78,7 @@ function cleanCompose(e: Record<string, unknown>) {
   };
 }
 
-export default async function handler(req: Request): Promise<Response> {
+async function handler(req: Request): Promise<Response> {
   // Which models would run, without running one. The browser records the primary against its cached
   // maps, so switching ATLAS_ENRICH_MODEL misses cleanly instead of serving the cheap model's answers
   // for ever — and it needs to know whether a fallback is worth offering before it offers it.
@@ -131,3 +131,9 @@ export default async function handler(req: Request): Promise<Response> {
     return json(502, { ok: false, error: 'the enrichment service could not complete this pass' });
   }
 }
+
+// Exported under the method names it serves, not as `default`. Vercel's Node runtime reads a default
+// export as the legacy `(req, res) => void` signature and throws away whatever is returned, so a
+// fetch-style handler exported that way answers nothing and the invocation fails. Anything other than
+// GET or POST is refused by the runtime before it reaches here.
+export { handler as GET, handler as POST };
