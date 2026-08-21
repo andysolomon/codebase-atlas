@@ -1,12 +1,16 @@
 /* Codebase Atlas engine — isometric hatched drafting-paper map.
-   1:1 TypeScript port of prototype/atlas-engine.js (the source of truth).
-   Framework-free: operates directly on SVG + DOM. Zero runtime dependencies.
+   Ported from prototype/atlas-engine.js (the source of truth for the look). The chrome — topbar,
+   sidebar, right panel, tooltip, trace — is plain DOM. The map itself is a Three.js scene (scene.ts)
+   navigated like a map: pan, rotate, tilt, zoom to the cursor. The default camera reproduces the
+   prototype's isometric projection exactly.
    Registers <codebase-atlas paper="tan|light|dark" flow="true|false">.
    Data is supplied via the `data` property (or window.ATLAS_DATA as a fallback). */
 
-import type { AtlasData, Edge, PaperTheme, Structure, Theme } from './types';
+import type { AtlasData, PaperTheme, Structure, Theme } from './types';
+import { AtlasScene, MONO } from './scene';
+import type { Projection, SceneBlock, SceneEdge, SceneExternal } from './scene';
 
-export const MONO = "ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace";
+export { MONO };
 
 export const THEMES: Record<PaperTheme, Theme> = {
   tan:   { bg: '#cfc79c', paper: '#c8c093', top: '#ddd6b2', faceA: '#bdb488', faceB: '#cec696', ink: '#16130a', dim: 'rgba(22,19,10,.55)', faint: 'rgba(22,19,10,.16)' },
@@ -14,18 +18,8 @@ export const THEMES: Record<PaperTheme, Theme> = {
   dark:  { bg: '#191510', paper: '#14100c', top: '#2c251b', faceA: '#211b13', faceB: '#271f16', ink: '#e4d3a1', dim: 'rgba(228,211,161,.55)', faint: 'rgba(228,211,161,.16)' },
 };
 
-// ── isometric projection ──
-export const SX = 26, SY = 14.3, SH = 16;
-type Pt = [number, number];
-export const P = (gx: number, gy: number, h?: number): Pt => [(gx - gy) * SX, (gx + gy) * SY - (h || 0) * SH];
-const pts = (a: Pt[]) => a.map((p) => p[0].toFixed(1) + ',' + p[1].toFixed(1)).join(' ');
 const esc = (t: unknown) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
-function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs?: Record<string, string | number>): SVGElementTagNameMap[K] {
-  const e = document.createElementNS('http://www.w3.org/2000/svg', tag);
-  if (attrs) for (const k in attrs) e.setAttribute(k, String(attrs[k]));
-  return e;
-}
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, css?: string, html?: string | null): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
   if (css) e.style.cssText = css;
@@ -41,10 +35,6 @@ interface ViewStruct {
   children?: Structure['children'];
   _child?: NonNullable<Structure['children']>[number];
 }
-interface Seg { a: Pt; b: Pt; l: number; at: number }
-interface EdgeGeo { e: Edge; segs: Seg[]; len: number }
-interface Dot { g: EdgeGeo; t: number; el: SVGCircleElement }
-interface BlockRef { g: SVGGElement; top: SVGPolygonElement; code: SVGTextElement; s: ViewStruct }
 
 export class Atlas extends HTMLElement {
   static get observedAttributes() { return ['paper', 'flow']; }
@@ -57,7 +47,7 @@ export class Atlas extends HTMLElement {
     if (!d || !this.isConnected) return;
     if (!this.booted) { this.bootIfReady(); return; }
     // Swap datasets in place: reset view state and rebuild.
-    this.sel = null; this.inside = null; this.traceI = -1; this.dots = [];
+    this.sel = null; this.inside = null; this.traceI = -1;
     this.D = d; this.byId = {}; d.STRUCTURES.forEach((s) => { this.byId[s.id] = s; });
     this.setHash('');
     this.build();
@@ -82,9 +72,6 @@ export class Atlas extends HTMLElement {
   private sel: string | null = null;
   private inside: string | null = null;
   private traceI = -1;
-  private dots: Dot[] = [];
-  private dead = false;
-  private lastT = 0;
   private booted = false;
   private pollIv: number | null = null;
   private onKey: ((e: KeyboardEvent) => void) | null = null;
@@ -93,17 +80,18 @@ export class Atlas extends HTMLElement {
   private sideEl!: HTMLDivElement;
   private mapWrap!: HTMLDivElement;
   private panelEl!: HTMLDivElement;
-  private svg!: SVGSVGElement;
   private tipEl!: HTMLDivElement;
   private rowEls: Record<string, HTMLDivElement> = {};
-  private blockEls: Record<string, BlockRef> = {};
-  private edgeGeo: EdgeGeo[] = [];
-  private vb: [number, number, number, number] = [0, 0, 1, 1];
-  private fitW = 1;
+  private views: Record<string, ViewStruct> = {};
+  private scene: AtlasScene | null = null;
+  private compassEl: HTMLElement | null = null;
+  private projEl: HTMLButtonElement | null = null;
+  private hoveredEdge: SceneEdge | null = null;
+  /** FLAT (orthographic, the drafting look) or DEEP (perspective). Survives rebuilds and theme changes. */
+  private projection: Projection = 'flat';
 
   connectedCallback() {
     this.sel = null; this.inside = null; this.traceI = -1;
-    this.dots = []; this.dead = false; this.lastT = 0;
     this.bootIfReady();
   }
   private bootIfReady() {
@@ -134,15 +122,17 @@ export class Atlas extends HTMLElement {
       else if (e.key === 'ArrowLeft' && this.traceI >= 0) this.stepTrace(-1);
     };
     window.addEventListener('keydown', this.onKey);
-    this.loop = this.loop.bind(this);
-    requestAnimationFrame(this.loop);
   }
   disconnectedCallback() {
-    this.dead = true;
+    this.scene?.dispose(); this.scene = null;
     if (this.onKey) window.removeEventListener('keydown', this.onKey);
     if (this.pollIv != null) { window.clearInterval(this.pollIv); this.pollIv = null; }
   }
-  attributeChangedCallback(n: string, a: string | null, b: string | null) { if (a === b || !this.D) return; if (n === 'paper') this.build(); }
+  attributeChangedCallback(n: string, a: string | null, b: string | null) {
+    if (a === b || !this.D) return;
+    if (n === 'paper') this.build();
+    else if (n === 'flow') this.scene?.setFlow(this.flowOn());
+  }
   theme(): Theme { return THEMES[this.getAttribute('paper') as PaperTheme] || THEMES.tan; }
   flowOn() { return this.getAttribute('flow') !== 'false'; }
 
@@ -226,6 +216,7 @@ export class Atlas extends HTMLElement {
 
   build() {
     const T = this.theme();
+    this.scene?.dispose(); this.scene = null;
     this.style.cssText = `display:grid;grid-template-rows:auto 1fr;width:100%;height:100vh;min-height:640px;background:${T.bg};color:${T.ink};font-family:${MONO};overflow:hidden;box-sizing:border-box`;
     this.innerHTML = '';
     // ── topbar ──
@@ -256,7 +247,7 @@ export class Atlas extends HTMLElement {
         r.innerHTML = `<span style="flex:none;width:20px;font-size:9px;border:1px solid ${T.ink};text-align:center;padding:1px 0">${s.code}</span><span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.name)}</span><span style="flex:none;font-size:9px;color:${T.dim}">${esc(s.loc.split('·')[1] || s.loc)}</span>`;
         r.onmouseenter = () => { if (this.sel !== id) r.style.background = T.faint; };
         r.onmouseleave = () => { if (this.sel !== id) r.style.background = ''; };
-        r.onclick = () => { if (this.inside) this.comeOut(true); this.select(id); };
+        r.onclick = () => { if (this.inside) this.comeOut(true); this.select(id); if (this.sel === id) this.scene?.focus(id); };
         this.rowEls[id] = r;
         this.sideEl.appendChild(r);
       });
@@ -275,126 +266,135 @@ export class Atlas extends HTMLElement {
   }
   renderScene() {
     const T = this.theme(), D = this.D;
+    this.scene?.dispose(); this.scene = null;
     this.mapWrap.innerHTML = '';
-    const svg = svgEl('svg', { style: `width:100%;height:100%;display:block;background:${T.bg}` });
-    this.svg = svg;
-    const defs = svgEl('defs');
-    const mkPat = (id: string, rot: number, gap: number, op: number) => {
-      const p = svgEl('pattern', { id, width: gap, height: gap, patternUnits: 'userSpaceOnUse', patternTransform: `rotate(${rot})` });
-      const ln = svgEl('line', { x1: 0, y1: 0, x2: 0, y2: gap, stroke: T.ink, 'stroke-width': 0.9, opacity: op });
-      p.appendChild(ln); return p;
-    };
-    defs.appendChild(mkPat('atlasHA', 45, 4.2, 0.5));
-    defs.appendChild(mkPat('atlasHB', -45, 5.2, 0.28));
-    svg.appendChild(defs);
-    const L = { edges: svgEl('g'), dots: svgEl('g'), blocks: svgEl('g'), labels: svgEl('g'), over: svgEl('g') };
+    this.mapWrap.style.background = T.bg;
     const structs = this.structsNow();
-    const ctr = (s: ViewStruct): Pt => [s.gx + s.w / 2, s.gy + s.d / 2];
+    this.views = {}; structs.forEach((s) => { this.views[s.id] = s; });
 
-    // edges (main view only)
-    this.edgeGeo = [];
+    const blocks: SceneBlock[] = structs.map((s) => ({
+      id: s.id, code: s.code, name: s.name, loc: s.loc, gx: s.gx, gy: s.gy, w: s.w, d: s.d, h: s.h,
+      ...(s.slab ? { slab: s.slab } : {}), enterable: !!s.children,
+    }));
+    const blockById: Record<string, SceneBlock> = {}; blocks.forEach((b) => { blockById[b.id] = b; });
+    const edges: SceneEdge[] = [];
+    const externals: SceneExternal[] = [];
     if (!this.inside) {
-      D.EDGES.forEach((e) => {
-        const f = this.byId[e.f], t = this.byId[e.t]; if (!f || !t) return;
-        const a = ctr(f), b = ctr(t);
-        let grid: Pt[] = [a];
-        if (e.via) grid = grid.concat(e.via);
-        else if (Math.abs(a[0] - b[0]) > 0.3 && Math.abs(a[1] - b[1]) > 0.3) grid.push([b[0], a[1]]);
-        grid.push(b);
-        const scr = grid.map((g) => P(g[0], g[1], 0));
-        const poly = svgEl('polyline', { points: pts(scr), fill: 'none', stroke: T.ink, 'stroke-width': e.flow ? 1.3 : 1, opacity: e.dashed ? 0.4 : 0.55, ...(e.dashed ? { 'stroke-dasharray': '4 3.5' } : {}) });
-        L.edges.appendChild(poly);
-        L.edges.appendChild(svgEl('circle', { cx: scr[scr.length - 1][0], cy: scr[scr.length - 1][1], r: 2, fill: T.ink, opacity: 0.6 }));
-        // segment table for dots + hover hit line
-        let len = 0; const segs: Seg[] = [];
-        for (let i = 1; i < scr.length; i++) {
-          const d = Math.hypot(scr[i][0] - scr[i - 1][0], scr[i][1] - scr[i - 1][1]);
-          segs.push({ a: scr[i - 1], b: scr[i], l: d, at: len }); len += d;
-        }
-        const hit = svgEl('polyline', { points: pts(scr), fill: 'none', stroke: 'transparent', 'stroke-width': 9, style: 'pointer-events:stroke;cursor:help' });
-        hit.addEventListener('pointerenter', (ev) => this.tip(ev, `<b>${esc(f.name)} → ${esc(t.name)}</b><br>${esc(e.pay || '')}`));
-        hit.addEventListener('pointermove', (ev) => this.tipMove(ev));
-        hit.addEventListener('pointerleave', () => this.tipHide());
-        L.edges.appendChild(hit);
-        this.edgeGeo.push({ e, segs, len });
-      });
+      D.EDGES.forEach((e) => { const f = blockById[e.f], t = blockById[e.t]; if (f && t) edges.push({ e, f, t }); });
+      (D.EXTERNALS || []).forEach((x) => { const t = blockById[x.t]; if (t) externals.push({ x, t }); });
     }
-    // dots
-    this.dots = [];
-    this.edgeGeo.forEach((g) => {
-      if (!g.e.flow) return;
-      for (let k = 0; k < 2; k++) {
-        const c = svgEl('circle', { r: 2.7, fill: T.ink, stroke: T.bg, 'stroke-width': 1 });
-        L.dots.appendChild(c);
-        this.dots.push({ g, t: k * 0.5, el: c });
-      }
+
+    this.scene = new AtlasScene(this.mapWrap, T, {
+      onHoverBlock: (b, ev) => {
+        if (!b) { this.tipHide(); return; }
+        const s = this.views[b.id];
+        this.tip(ev, `<b>${s.code} · ${esc(s.name)}</b><br>${esc(s.what.split('. ')[0])}.${(s.children || s._child) ? `<br><i style="color:${T.dim}">${s.children ? 'double-click to go inside' : ''}</i>` : ''}`);
+      },
+      onHoverEdge: (e, ev) => {
+        if (!e) { if (this.hoveredEdge) { this.hoveredEdge = null; this.tipHide(); } return; }
+        if (e === this.hoveredEdge) { this.tipMove(ev); return; }
+        this.hoveredEdge = e;
+        this.tip(ev, `<b>${esc(e.f.name)} → ${esc(e.t.name)}</b><br>${esc(e.e.pay || '')}`);
+      },
+      onClick: (b) => {
+        if (b) { this.select(b.id); return; }
+        this.sel = null; if (this.traceI >= 0) this.endTrace(); else this.syncUI();
+      },
+      onDblClick: (b) => { if (b.enterable) this.goInside(b.id); else if (this.sel !== b.id) this.select(b.id); },
+      onView: (turn, proj) => {
+        if (this.compassEl) this.compassEl.style.transform = `rotate(${(-turn * 180 / Math.PI).toFixed(1)}deg)`;
+        if (this.projEl) this.projEl.textContent = proj === 'flat' ? '▱ FLAT' : '◇ DEEP';
+      },
+      arrowsTaken: () => this.traceI >= 0,
     });
-    // blocks
-    this.blockEls = {};
-    structs.slice().sort((a, b) => (a.gx + a.gy + (a.w + a.d) / 2) - (b.gx + b.gy + (b.w + b.d) / 2)).forEach((s) => {
-      const { gx, gy, w, d, h } = s;
-      const Bg = P(gx + w, gy, 0), Cg = P(gx + w, gy + d, 0), Dg = P(gx, gy + d, 0);
-      const At = P(gx, gy, h), Bt = P(gx + w, gy, h), Ct = P(gx + w, gy + d, h), Dt = P(gx, gy + d, h);
-      const g = svgEl('g', { style: 'cursor:pointer', 'data-id': s.id });
-      const faceL = svgEl('polygon', { points: pts([Dt, Ct, Cg, Dg]), fill: T.faceA, stroke: T.ink, 'stroke-width': 1.2, 'stroke-linejoin': 'round' });
-      const faceLh = svgEl('polygon', { points: pts([Dt, Ct, Cg, Dg]), fill: 'url(#atlasHA)', stroke: 'none' });
-      const faceR = svgEl('polygon', { points: pts([Ct, Bt, Bg, Cg]), fill: T.faceB, stroke: T.ink, 'stroke-width': 1.2, 'stroke-linejoin': 'round' });
-      const faceRh = svgEl('polygon', { points: pts([Ct, Bt, Bg, Cg]), fill: 'url(#atlasHB)', stroke: 'none' });
-      const top = svgEl('polygon', { points: pts([At, Bt, Ct, Dt]), fill: T.top, stroke: T.ink, 'stroke-width': 1.4, 'stroke-linejoin': 'round' });
-      [faceL, faceLh, faceR, faceRh, top].forEach((f) => g.appendChild(f));
-      const tc = P(gx + w / 2, gy + d / 2, h);
-      const codeFS = s.slab ? 9 : Math.max(10, Math.min(19, Math.min(w, d) * 6.5));
-      const code = svgEl('text', { x: tc[0], y: tc[1] + codeFS * 0.36, 'text-anchor': 'middle', 'font-family': MONO, 'font-size': codeFS, 'font-weight': 700, fill: T.ink, 'letter-spacing': '.08em', style: 'pointer-events:none' });
-      code.textContent = s.code; g.appendChild(code);
-      const lp: Pt = [(Dg[0] + Cg[0]) / 2, Math.max(Cg[1], Dg[1]) + 11];
-      const name = svgEl('text', { x: lp[0], y: lp[1], 'text-anchor': 'middle', 'font-family': MONO, 'font-size': 8.5, fill: T.ink, 'letter-spacing': '.1em', style: 'pointer-events:none' });
-      name.textContent = s.name.toUpperCase(); L.labels.appendChild(name);
-      if (s.loc) {
-        const loc = svgEl('text', { x: lp[0], y: lp[1] + 10, 'text-anchor': 'middle', 'font-family': MONO, 'font-size': 7.5, fill: T.dim, style: 'pointer-events:none' });
-        loc.textContent = s.loc; L.labels.appendChild(loc);
-      }
-      g.addEventListener('pointerenter', (ev) => { if (this.sel !== s.id) top.setAttribute('fill', T.faceB); this.tip(ev, `<b>${s.code} · ${esc(s.name)}</b><br>${esc(s.what.split('. ')[0])}.${(s.children || s._child) ? `<br><i style="color:${T.dim}">${s.children ? 'double-click to go inside' : ''}</i>` : ''}`); });
-      g.addEventListener('pointermove', (ev) => this.tipMove(ev));
-      g.addEventListener('pointerleave', () => { this.tipHide(); this.paintSel(); });
-      g.addEventListener('click', (ev) => { ev.stopPropagation(); this.select(s.id); });
-      g.addEventListener('dblclick', (ev) => { ev.stopPropagation(); if (s.children) this.goInside(s.id); });
-      L.blocks.appendChild(g);
-      this.blockEls[s.id] = { g, top, code, s };
-    });
-    // externals
-    if (!this.inside) (D.EXTERNALS || []).forEach((x) => {
-      const t = this.byId[x.t]; if (!t) return;
-      const anchor = P(t.gx + t.w / 2, t.gy + t.d / 2, t.h + 0.15);
-      const lp = P(t.gx + t.w / 2 + x.dx, t.gy + t.d / 2 + x.dy, t.h + 0.15);
-      L.over.appendChild(svgEl('line', { x1: anchor[0], y1: anchor[1], x2: lp[0], y2: lp[1], stroke: T.ink, 'stroke-width': 0.9, 'stroke-dasharray': '2.5 3', opacity: 0.5 }));
-      const tx = svgEl('text', { x: lp[0], y: lp[1] - 4, 'text-anchor': 'middle', 'font-family': MONO, 'font-size': 8, fill: T.dim, 'letter-spacing': '.14em' });
-      tx.textContent = x.name; L.over.appendChild(tx);
-    });
-    svg.appendChild(L.edges); svg.appendChild(L.dots); svg.appendChild(L.blocks); svg.appendChild(L.labels); svg.appendChild(L.over);
-    this.mapWrap.appendChild(svg);
+    this.scene.setFlow(this.flowOn());
+    this.scene.setData(blocks, edges, externals, T);
+    if (this.projection !== 'flat') this.scene.setProjection(this.projection);
+
     // overlays
     const cart = el('div', `position:absolute;left:14px;bottom:14px;border:1.5px solid ${T.ink};background:${T.bg};padding:9px 13px;font-size:9px;letter-spacing:.12em;line-height:1.9;pointer-events:none`);
     cart.innerHTML = this.inside
       ? `<b style="font-size:11px">INSIDE ${this.byId[this.inside].code} — ${esc(this.byId[this.inside].name.toUpperCase())}</b><br><span style="color:${T.dim}">${esc(this.byId[this.inside].loc)}</span>`
       : `<b style="font-size:11px">${esc(D.product)} — CODEBASE ATLAS</b><br><span style="color:${T.dim}">${esc(D.repo)} · BLOCK HEIGHT = CODE SIZE · SLABS = STORAGE &amp; RECORDS</span>`;
     this.mapWrap.appendChild(cart);
-    const hint = el('div', `position:absolute;right:14px;bottom:14px;font-size:9px;letter-spacing:.12em;color:${T.dim};pointer-events:none`,
-      this.inside ? 'ESC TO COME BACK OUT' : 'DRAG TO PAN · SCROLL TO ZOOM · HOVER · CLICK · DOUBLE-CLICK TO GO INSIDE');
+    const hint = el('div', `position:absolute;right:14px;bottom:14px;font-size:9px;letter-spacing:.12em;color:${T.dim};pointer-events:none;text-align:right`,
+      this.inside ? 'ESC TO COME BACK OUT' : 'DRAG TO PAN · RIGHT-DRAG TO TURN · SCROLL TO ZOOM · CLICK · DOUBLE-CLICK TO GO INSIDE');
     this.mapWrap.appendChild(hint);
     if (this.inside) {
       const back = el('button', `position:absolute;left:14px;top:14px;font-family:${MONO};font-size:10px;letter-spacing:.12em;background:${T.ink};color:${T.bg};border:none;padding:8px 12px;cursor:pointer`, '← BACK TO THE MAP');
       back.onclick = () => this.comeOut();
       this.mapWrap.appendChild(back);
     }
-    const fit = el('button', `position:absolute;right:14px;top:14px;font-family:${MONO};font-size:10px;background:none;border:1.5px solid ${T.ink};color:${T.ink};padding:6px 10px;cursor:pointer;letter-spacing:.1em`, '⌖ FIT');
-    fit.onclick = () => this.fitView();
-    this.mapWrap.appendChild(fit);
+    this.mapWrap.appendChild(this.navControl(T));
     this.tipEl = el('div', `position:absolute;display:none;max-width:250px;border:1.5px solid ${T.ink};background:${T.bg};color:${T.ink};padding:7px 10px;font-size:10.5px;line-height:1.5;pointer-events:none;z-index:5`);
     this.mapWrap.appendChild(this.tipEl);
-    this.bindPanZoom();
-    this.fitView();
     this.paintSel();
   }
+
+  /** The map's own controls, stacked top-right: fit, reset, zoom, compass, projection, help. */
+  private navControl(T: Theme) {
+    const box = el('div', `position:absolute;right:14px;top:14px;display:flex;flex-direction:column;border:1.5px solid ${T.ink};background:${T.bg};z-index:4`);
+    const BTN = `font-family:${MONO};font-size:10px;letter-spacing:.1em;background:none;border:none;border-bottom:1.5px solid ${T.ink};color:${T.ink};padding:7px 10px;cursor:pointer;text-align:left;white-space:nowrap;min-width:78px;line-height:1;box-sizing:border-box`;
+    const btn = (label: string, title: string, act: () => void, css = '') => {
+      const b = el('button', BTN + css, label);
+      b.title = title; b.setAttribute('aria-label', title);
+      b.onclick = act;
+      box.appendChild(b);
+      return b;
+    };
+    btn('⌖ FIT', 'Frame the whole atlas (F)', () => this.scene?.fit());
+    btn('⟲ RESET', 'Back to the isometric view (R)', () => this.scene?.reset());
+    const zoomRow = el('div', `display:flex;border-bottom:1.5px solid ${T.ink}`);
+    const zb = (label: string, title: string, k: number, extra: string) => {
+      const b = el('button', `${BTN};border-bottom:none;flex:1;min-width:0;text-align:center;${extra}`, label);
+      b.title = title; b.setAttribute('aria-label', title);
+      b.onclick = () => this.scene?.zoomBy(k);
+      zoomRow.appendChild(b);
+    };
+    zb('+', 'Zoom in (+)', 1.35, `border-right:1.5px solid ${T.ink}`);
+    zb('−', 'Zoom out (−)', 1 / 1.35, '');
+    box.appendChild(zoomRow);
+    // compass: the needle points to the map's north — the top of the default isometric view
+    const cb = el('button', `${BTN};display:flex;align-items:center;gap:8px`);
+    cb.title = 'Turn back to north (N)'; cb.setAttribute('aria-label', cb.title);
+    const needle = el('span', 'display:inline-block;width:16px;height:16px;transition:transform .12s linear;transform-origin:50% 50%');
+    needle.innerHTML = `<svg viewBox="0 0 16 16" width="16" height="16" style="display:block"><circle cx="8" cy="8" r="7" fill="none" stroke="${T.ink}" stroke-width="1.2"/><path d="M8 1.5 L10.4 8 L8 6.8 L5.6 8 Z" fill="${T.ink}"/><path d="M8 14.5 L10.4 8 L8 9.2 L5.6 8 Z" fill="none" stroke="${T.ink}" stroke-width="1"/></svg>`;
+    cb.appendChild(needle); cb.appendChild(el('span', '', 'N'));
+    cb.onclick = () => this.scene?.resetHeading();
+    box.appendChild(cb);
+    this.compassEl = needle;
+    // projection
+    this.projEl = btn(this.projection === 'flat' ? '▱ FLAT' : '◇ DEEP', 'FLAT is the drafting view (orthographic); DEEP adds perspective', () => {
+      if (!this.scene) return;
+      this.projection = this.scene.getProjection() === 'flat' ? 'deep' : 'flat';
+      this.scene.setProjection(this.projection);
+    });
+    // help
+    const wrap = el('div', 'position:relative');
+    const tipBox = el('div', `position:absolute;right:100%;bottom:0;margin-right:8px;width:236px;display:none;border:1.5px solid ${T.ink};background:${T.bg};color:${T.ink};padding:10px 12px;font-size:10px;line-height:1.8;letter-spacing:.06em;text-align:left;white-space:normal`);
+    const row = (k: string, v: string) => `<div style="display:flex;gap:10px"><span style="flex:none;width:96px;color:${T.dim}">${k}</span><span>${v}</span></div>`;
+    tipBox.innerHTML = [
+      `<div style="font-size:9px;letter-spacing:.18em;margin-bottom:6px">MOUSE</div>`,
+      row('DRAG', 'pan'), row('RIGHT-DRAG', 'rotate &amp; tilt'), row('CTRL + DRAG', 'rotate &amp; tilt'), row('WHEEL', 'zoom at the cursor'),
+      row('CLICK', 'select'), row('DOUBLE-CLICK', 'go inside'),
+      `<div style="font-size:9px;letter-spacing:.18em;margin:8px 0 6px">TOUCH</div>`,
+      row('ONE FINGER', 'pan'), row('TWO FINGERS', 'pinch to zoom, twist to turn'),
+      `<div style="font-size:9px;letter-spacing:.18em;margin:8px 0 6px">KEYBOARD (MAP FOCUSED)</div>`,
+      row('ARROWS', 'pan · shift for more'), row('+ / −', 'zoom'), row('F', 'fit'), row('R', 'reset view'), row('N', 'north'), row('ESC', 'back out'),
+    ].join('');
+    const help = el('button', `${BTN};border-bottom:none;text-align:center;width:100%`, '?');
+    help.title = 'How to move around'; help.setAttribute('aria-label', help.title);
+    const show = (on: boolean) => { tipBox.style.display = on ? 'block' : 'none'; };
+    help.onclick = () => show(tipBox.style.display === 'none');
+    help.onmouseenter = () => show(true);
+    help.onfocus = () => show(true);
+    help.onblur = () => show(false);
+    box.onmouseleave = () => show(false);
+    wrap.appendChild(help); wrap.appendChild(tipBox);
+    box.appendChild(wrap);
+    return box;
+  }
+
   tip(ev: PointerEvent, html: string) { this.tipEl.innerHTML = html; this.tipEl.style.display = 'block'; this.tipMove(ev); }
   tipMove(ev: PointerEvent) {
     const r = this.mapWrap.getBoundingClientRect();
@@ -405,62 +405,7 @@ export class Atlas extends HTMLElement {
     this.tipEl.style.left = x + 'px'; this.tipEl.style.top = y + 'px';
   }
   tipHide() { this.tipEl.style.display = 'none'; }
-  fitView() {
-    const bb = this.svg.getBBox(), pad = 34;
-    this.vb = [bb.x - pad, bb.y - pad, bb.width + pad * 2, bb.height + pad * 2];
-    this.fitW = this.vb[2];
-    this.applyVB();
-  }
-  applyVB() { this.svg.setAttribute('viewBox', this.vb.map((n) => n.toFixed(1)).join(' ')); }
-  bindPanZoom() {
-    const svg = this.svg;
-    svg.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
-      const p = pt.matrixTransform(svg.getScreenCTM()!.inverse());
-      const k = e.deltaY > 0 ? 1.12 : 1 / 1.12;
-      const nw = Math.max(this.fitW / 5, Math.min(this.fitW * 2.2, this.vb[2] * k));
-      const kk = nw / this.vb[2];
-      this.vb = [p.x - (p.x - this.vb[0]) * kk, p.y - (p.y - this.vb[1]) * kk, nw, this.vb[3] * kk];
-      this.applyVB();
-    }, { passive: false });
-    let drag: { x: number; y: number; vb: [number, number, number, number]; moved: boolean } | null = null;
-    // NB: pointer capture is taken only once a real drag begins. Capturing on pointerdown
-    // retargets the following pointerup/click/dblclick to the <svg>, which silently breaks
-    // block selection and double-click-to-go-inside.
-    svg.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; drag = { x: e.clientX, y: e.clientY, vb: this.vb.slice() as [number, number, number, number], moved: false }; });
-    svg.addEventListener('pointermove', (e) => {
-      if (!drag) return;
-      if (!drag.moved) {
-        if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) <= 4) return;
-        drag.moved = true; svg.setPointerCapture(e.pointerId); svg.style.cursor = 'grabbing'; this.tipHide();
-      }
-      const sc = this.vb[2] / svg.clientWidth;
-      const dx = (e.clientX - drag.x) * sc, dy = (e.clientY - drag.y) * sc;
-      this.vb = [drag.vb[0] - dx, drag.vb[1] - dy, drag.vb[2], drag.vb[3]];
-      this.applyVB();
-    });
-    const end = (e: PointerEvent) => {
-      const wasDrag = !!(drag && drag.moved); drag = null; svg.style.cursor = '';
-      if (wasDrag) { if (svg.hasPointerCapture(e.pointerId)) svg.releasePointerCapture(e.pointerId); return; }
-      const tgt = e.target as Element;
-      if (tgt === svg || tgt.tagName === 'defs') { this.sel = null; if (this.traceI >= 0) this.endTrace(); else this.syncUI(); }
-    };
-    svg.addEventListener('pointerup', end);
-    svg.addEventListener('pointercancel', end);
-  }
-  loop(t: number) {
-    if (this.dead) return;
-    const dt = Math.min(0.06, (t - this.lastT) / 1000 || 0.016); this.lastT = t;
-    if (this.flowOn()) this.dots.forEach((d) => {
-      d.t = (d.t + dt * 46 / d.g.len) % 1;
-      const dist = d.t * d.g.len;
-      for (const s of d.g.segs) {
-        if (dist <= s.at + s.l) { const u = (dist - s.at) / s.l; d.el.setAttribute('cx', (s.a[0] + (s.b[0] - s.a[0]) * u).toFixed(1)); d.el.setAttribute('cy', (s.a[1] + (s.b[1] - s.a[1]) * u).toFixed(1)); break; }
-      }
-    });
-    requestAnimationFrame(this.loop);
-  }
+  fitView() { this.scene?.fit(); }
 
   // ───────────────────────── state ─────────────────────────
   select(id: string, fromTrace?: boolean) {
@@ -472,14 +417,7 @@ export class Atlas extends HTMLElement {
   paintSel() {
     const T = this.theme();
     const traceIds = this.traceI >= 0 ? [this.D.TRACE[this.traceI][0]] : null;
-    for (const id in this.blockEls) {
-      const b = this.blockEls[id];
-      const isSel = this.sel === id;
-      b.top.setAttribute('fill', isSel ? T.ink : T.top);
-      b.code.setAttribute('fill', isSel ? T.bg : T.ink);
-      b.top.setAttribute('stroke-width', isSel ? '2' : '1.4');
-      b.g.style.opacity = traceIds ? (traceIds.includes(id) ? '1' : '0.22') : '1';
-    }
+    this.scene?.setSelection(this.sel, traceIds);
     if (this.rowEls) for (const id in this.rowEls) {
       const r = this.rowEls[id], on = this.sel === id;
       r.style.background = on ? T.ink : ''; r.style.color = on ? T.bg : '';
@@ -501,7 +439,7 @@ export class Atlas extends HTMLElement {
   startTrace() { if (this.inside) this.comeOut(true); this.traceI = 0; this.applyTrace(); }
   stepTrace(d: number) { this.traceI = Math.max(0, Math.min(this.D.TRACE.length - 1, this.traceI + d)); this.applyTrace(); }
   endTrace() { this.traceI = -1; this.sel = null; this.setHash(''); this.syncUI(); }
-  applyTrace() { const st = this.D.TRACE[this.traceI]; this.sel = st[0]; this.setHash('#trace=' + this.traceI); this.syncUI(); }
+  applyTrace() { const st = this.D.TRACE[this.traceI]; this.sel = st[0]; this.setHash('#trace=' + this.traceI); this.syncUI(); this.scene?.focus(st[0]); }
 
   // ───────────────────────── right panel ─────────────────────────
   rich(t: string) { const T = this.theme(); return esc(t).replace(/\[\[(.+?)\]\]/g, `<span style="background:${T.ink};color:${T.bg};padding:0 4px">$1</span>`); }
@@ -546,10 +484,14 @@ export class Atlas extends HTMLElement {
         ${cur.how ? this.hRule("HOW IT'S BUILT") + `<div style="font-size:12.5px;line-height:1.75">${this.rich(cur.how)}</div>` : ''}
         ${cur.src ? this.hRule('SOURCE') + `<div style="font-size:10.5px;line-height:2;color:${T.dim}">${cur.src.map(esc).join('<br>')}</div>` : ''}
         ${talks.length ? this.hRule('TALKS TO') + `<div id="pTalks" style="display:flex;flex-wrap:wrap;gap:6px">${talks.map((t) => `<button data-id="${t.id}" style="${btn};padding:5px 9px;font-size:10px">${t.code} ${esc(t.name.toUpperCase())}</button>`).join('')}</div>` : ''}
-        ${cur.children ? `<button id="pIn" style="${btn};background:${T.ink};color:${T.bg};margin-top:22px;width:100%">▣ GO INSIDE — ${cur.children.length} PARTS</button>` : ''}`;
+        <div style="display:flex;gap:8px;margin-top:22px">
+          <button id="pFocus" style="${btn};flex:1">⌖ FLY TO</button>
+          ${cur.children ? `<button id="pIn" style="${btn};background:${T.ink};color:${T.bg};flex:2">▣ GO INSIDE — ${cur.children.length} PARTS</button>` : ''}
+        </div>`;
       (Pn.querySelector('#pBack') as HTMLButtonElement).onclick = () => { this.sel = null; this.syncUI(); };
+      (Pn.querySelector('#pFocus') as HTMLButtonElement).onclick = () => this.scene?.focus(cur.id);
       const pin = Pn.querySelector('#pIn') as HTMLButtonElement | null; if (pin) pin.onclick = () => this.goInside(cur.id);
-      Pn.querySelectorAll<HTMLButtonElement>('#pTalks button').forEach((b) => { b.onclick = () => this.select(b.dataset.id!); });
+      Pn.querySelectorAll<HTMLButtonElement>('#pTalks button').forEach((b) => { b.onclick = () => { this.select(b.dataset.id!); this.scene?.focus(b.dataset.id!); }; });
       return;
     }
     // overview

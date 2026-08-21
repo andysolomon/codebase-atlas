@@ -54,7 +54,8 @@ function enrichDevEndpoint(mode: string): Plugin {
 }
 
 export default defineConfig(({ mode }) => ({
-  build: { target: 'es2022' },
+  // three is most of the bundle and changes least: its own chunk caches independently of the app
+  build: { target: 'es2022', chunkSizeWarningLimit: 600, rollupOptions: { output: { manualChunks: { three: ['three'] } } } },
   server: { port: 5173 },
   plugins: [enrichDevEndpoint(mode)],
 }));
