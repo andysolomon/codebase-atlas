@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "useDefineForClassFields": true
   },
-  "include": ["src"]
+  "include": ["src", "scripts", "api"]
 }

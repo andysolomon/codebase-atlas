@@ -24,5 +24,10 @@
     "semantic-release": "^25.0.9",
     "typescript": "^5.6.0",
     "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.40",
+    "ai": "^7.0.73",
+    "zod": "^4.4.3"
   }
 }
