@@ -40,13 +40,18 @@ export interface SceneBlock {
   enterable: boolean;
 }
 export interface SceneEdge { e: Edge; f: SceneBlock; t: SceneBlock }
+/** What an edge is called when it is selected or linked to: endpoints, not array position, because
+    re-analysing a repository reorders EDGES and a saved link must still mean the same relationship. */
+export const edgeKey = (e: { f: string; t: string }) => e.f + '→' + e.t;
+/** Something under the pointer: a block, an import arc, or the paper. */
+export interface SceneHit { block?: SceneBlock; edge?: SceneEdge }
 export interface SceneExternal { x: External; t: SceneBlock }
 
 export interface SceneHooks {
   onHoverBlock(b: SceneBlock | null, ev: PointerEvent): void;
   onHoverEdge(e: SceneEdge | null, ev: PointerEvent): void;
-  onClick(b: SceneBlock | null): void;
-  onDblClick(b: SceneBlock): void;
+  onClick(hit: SceneHit): void;
+  onDblClick(hit: SceneHit): void;
   /** Camera heading changed — `turn` is radians away from the default isometric heading. */
   onView(turn: number, projection: Projection): void;
   /** Arrow keys are spoken for elsewhere (the trace), so the scene leaves them alone. */
@@ -54,11 +59,16 @@ export interface SceneHooks {
 }
 
 interface BlockRec {
-  b: SceneBlock; mesh: THREE.Mesh; top: THREE.MeshBasicMaterial;
+  b: SceneBlock; mesh: THREE.Mesh; top: THREE.MeshBasicMaterial; outline: THREE.BufferGeometry;
   codeEl: HTMLDivElement; nameEl: HTMLDivElement; locEl: HTMLDivElement | null;
   codeFS: number; area: number;
 }
-interface EdgeRec { e: SceneEdge; curve: THREE.Curve<THREE.Vector3>; len: number; line: THREE.Line; proxy: THREE.Mesh }
+interface EdgeRec {
+  e: SceneEdge; key: string; curve: THREE.Curve<THREE.Vector3>; len: number;
+  line: THREE.Line; mat: THREE.LineBasicMaterial | THREE.LineDashedMaterial; base: number; proxy: THREE.Mesh;
+  /** A thin solid tube drawn only while the edge is selected — a 1px line cannot get thicker, so it gets a body. */
+  tube: THREE.Mesh; end: THREE.Mesh;
+}
 interface Dot { rec: EdgeRec; t: number; sprite: THREE.Sprite }
 interface ExtRec { el: HTMLDivElement; at: THREE.Vector3 }
 
@@ -102,7 +112,14 @@ export class AtlasScene {
   private hovered: BlockRec | null = null;
   private hoveredEdge: EdgeRec | null = null;
   private selected: string | null = null;
+  private selectedEdge: string | null = null;
   private dimmed: Set<string> | null = null;
+  /** Block outlines, merged into one draw call — two while something is dimmed, so the faded blocks fade whole. */
+  private outlineKeep: THREE.LineSegments | null = null;
+  private outlineDim: THREE.LineSegments | null = null;
+  private outlineMat!: THREE.LineBasicMaterial;
+  private outlineDimMat!: THREE.LineBasicMaterial;
+  private lastDimKey = '';
   private flow = true;
   private needsRender = true;
   private labelsDirty = true;
@@ -183,7 +200,7 @@ export class AtlasScene {
     c.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
     c.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
     c.addEventListener('start', () => { this.tween = null; this.canvas.style.cursor = 'grabbing'; });
-    c.addEventListener('end', () => { this.canvas.style.cursor = this.hovered ? 'pointer' : 'grab'; });
+    c.addEventListener('end', () => { this.canvas.style.cursor = this.hovered || this.hoveredEdge ? 'pointer' : 'grab'; });
     c.addEventListener('change', () => { this.clampTarget(); this.invalidate(); });
     this.applyLimits(c);
     return c;
@@ -276,6 +293,15 @@ export class AtlasScene {
     const zoom = THREE.MathUtils.clamp(Math.max(this.currentZoom(), this.fitZoom * 2.4), this.fitZoom / ZOOM_OUT, this.fitZoom * ZOOM_IN);
     this.animateTo({ target, zoom }, 700);
   }
+  /** Frame both ends of an import: the relationship, not one of its ends. */
+  focusEdge(key: string) {
+    const rec = this.edges.find((r) => r.key === key); if (!rec) return;
+    const box = new THREE.Box3();
+    for (const b of [rec.e.f, rec.e.t]) box.expandByPoint(new THREE.Vector3(b.gx, 0, b.gy)).expandByPoint(new THREE.Vector3(b.gx + b.w, b.h * HZ, b.gy + b.d));
+    box.expandByVector(new THREE.Vector3(1, 0.6, 1));
+    const { zoom, center } = this.fitFor(this.state(), box);
+    this.animateTo({ target: center, zoom: THREE.MathUtils.clamp(zoom, this.fitZoom / ZOOM_OUT, this.fitZoom * ZOOM_IN) }, 700);
+  }
   /** Turn back to the default heading, keeping tilt, zoom, and target. */
   resetHeading() { this.animateTo({ theta: DEFAULT_AZIMUTH }, 550); }
   zoomBy(k: number) {
@@ -307,9 +333,9 @@ export class AtlasScene {
     this.invalidate(); this.labelsDirty = true;
   }
 
-  private fitFor(s: CamState): { zoom: number; center: THREE.Vector3 } {
-    // project the content box into a camera at this heading/tilt and size it to the viewport
-    const b = this.fitBox, center = new THREE.Vector3(); b.getCenter(center); center.y = 0;
+  private fitFor(s: CamState, b = this.fitBox): { zoom: number; center: THREE.Vector3 } {
+    // project the box into a camera at this heading/tilt and size it to the viewport
+    const center = new THREE.Vector3(); b.getCenter(center); center.y = 0;
     const off = new THREE.Vector3().setFromSpherical(new THREE.Spherical(100, s.phi, s.theta));
     const cam = new THREE.OrthographicCamera(); cam.position.copy(center).add(off); cam.lookAt(center); cam.updateMatrixWorld();
     const inv = cam.matrixWorld.clone().invert();
@@ -332,10 +358,37 @@ export class AtlasScene {
 
   // ───────────────────────── content ─────────────────────────
   setFlow(on: boolean) { this.flow = on; this.invalidate(); }
-  setSelection(sel: string | null, dim: string[] | null) {
-    this.selected = sel; this.dimmed = dim ? new Set(dim) : null;
+  setSelection(sel: string | null, dim: string[] | null, edge: string | null = null) {
+    this.selected = sel; this.selectedEdge = edge; this.dimmed = dim ? new Set(dim) : null;
     this.blocks.forEach((r) => this.paintBlock(r));
+    this.edges.forEach((r) => this.paintEdge(r));
+    this.rebuildOutlines();
     this.invalidate();
+  }
+  /** One merged outline normally; when a dim set is on, the dimmed blocks' outlines move to a faded copy. */
+  private rebuildOutlines() {
+    const key = this.dimmed ? [...this.dimmed].sort().join('|') : '';
+    if (key === this.lastDimKey && this.outlineKeep) return;
+    this.lastDimKey = key;
+    for (const l of [this.outlineKeep, this.outlineDim]) if (l) { this.content.remove(l); l.geometry.dispose(); }
+    this.outlineKeep = this.outlineDim = null;
+    const keep: THREE.BufferGeometry[] = [], dim: THREE.BufferGeometry[] = [];
+    for (const r of this.blocks) (this.dimmed && !this.dimmed.has(r.b.id) ? dim : keep).push(r.outline);
+    const make = (gs: THREE.BufferGeometry[], mat: THREE.Material) => {
+      if (!gs.length) return null;
+      const l = new THREE.LineSegments(mergeGeometries(gs)!, mat); l.renderOrder = 1; this.content.add(l); return l;
+    };
+    this.outlineKeep = make(keep, this.outlineMat);
+    this.outlineDim = make(dim, this.outlineDimMat);
+  }
+  private paintEdge(r: EdgeRec) {
+    const sel = this.selectedEdge === r.key, hover = this.hoveredEdge === r;
+    // while something is picked out, every arc not part of it recedes with the blocks
+    const dim = this.dimmed ? !(this.dimmed.has(r.e.f.id) && this.dimmed.has(r.e.t.id)) : false;
+    r.mat.opacity = sel ? 1 : dim ? r.base * 0.3 : hover ? Math.min(1, r.base + 0.3) : r.base;
+    r.tube.visible = sel;
+    (r.end.material as THREE.Material).opacity = sel ? 1 : dim ? 0.18 : 0.6;
+    r.line.renderOrder = sel ? 4 : 2;
   }
   private paintBlock(r: BlockRec) {
     const T = this.T, sel = this.selected === r.b.id, hover = this.hovered === r;
@@ -352,6 +405,8 @@ export class AtlasScene {
     this.content.clear();
     this.disposables.forEach((d) => d.dispose()); this.disposables = [];
     this.blocks = []; this.byId = {}; this.edges = []; this.dots = []; this.exts = []; this.pickables = [];
+    for (const l of [this.outlineKeep, this.outlineDim]) if (l) l.geometry.dispose();
+    this.outlineKeep = this.outlineDim = null; this.lastDimKey = '';
     this.hovered = null; this.hoveredEdge = null;
     this.labelLayer.innerHTML = '';
   }
@@ -403,7 +458,9 @@ export class AtlasScene {
     const sideAd = new THREE.MeshBasicMaterial({ map: this.hatch('Ad') });
     const bottom = new THREE.MeshBasicMaterial({ color: T.faceA });
     this.disposables.push(sideA, sideAd, sideB, sideBd, bottom);
-    const outlineGeos: THREE.BufferGeometry[] = [];
+    this.outlineMat = new THREE.LineBasicMaterial({ color: ink });
+    this.outlineDimMat = new THREE.LineBasicMaterial({ color: ink, transparent: true, opacity: 0.22 });
+    this.disposables.push(this.outlineMat, this.outlineDimMat);
     const box = new THREE.Box3();
     blocks.forEach((b) => {
       const H = Math.max(0.02, b.h * HZ);
@@ -419,24 +476,16 @@ export class AtlasScene {
       mesh.userData.id = b.id;
       this.content.add(mesh); this.pickables.push(mesh);
       this.disposables.push(geo, top, ...(mesh.material as THREE.Material[]));
-      const eg = new THREE.EdgesGeometry(geo, 1); eg.translate(mesh.position.x, mesh.position.y, mesh.position.z);
-      outlineGeos.push(eg);
+      const outline = new THREE.EdgesGeometry(geo, 1); outline.translate(mesh.position.x, mesh.position.y, mesh.position.z);
+      this.disposables.push(outline);
       box.expandByObject(mesh);
       const codeFS = b.slab ? 9 : Math.max(10, Math.min(19, Math.min(b.w, b.d) * 6.5));
       const codeEl = this.label(`font-weight:700;letter-spacing:.08em;color:${T.ink}`, b.code);
       const nameEl = this.label(`font-size:8.5px;letter-spacing:.1em;color:${T.ink}`, b.name.toUpperCase());
       const locEl = b.loc ? this.label(`font-size:7.5px;color:${T.dim}`, b.loc) : null;
-      const rec: BlockRec = { b, mesh, top, codeEl, nameEl, locEl, codeFS, area: b.w * b.d };
+      const rec: BlockRec = { b, mesh, top, outline, codeEl, nameEl, locEl, codeFS, area: b.w * b.d };
       this.blocks.push(rec); this.byId[b.id] = rec;
     });
-    if (outlineGeos.length) {
-      const merged = mergeGeometries(outlineGeos)!;
-      outlineGeos.forEach((g) => g.dispose());
-      const lines = new THREE.LineSegments(merged, new THREE.LineBasicMaterial({ color: ink }));
-      lines.renderOrder = 1;
-      this.content.add(lines);
-      this.disposables.push(merged, lines.material as THREE.Material);
-    }
 
     // ── edges: elevated arcs from roof to roof ──
     const dotTex = this.dotTexture(T);
@@ -445,7 +494,8 @@ export class AtlasScene {
     const proxyMat = new THREE.MeshBasicMaterial({ visible: false });
     const endMat = new THREE.MeshBasicMaterial({ color: ink, transparent: true, opacity: 0.6 });
     const endGeo = new THREE.SphereGeometry(0.06, 8, 6);
-    this.disposables.push(dashMat, solidMat, proxyMat, endMat, endGeo);
+    const tubeMat = new THREE.MeshBasicMaterial({ color: ink });
+    this.disposables.push(dashMat, solidMat, proxyMat, endMat, endGeo, tubeMat);
     edges.forEach((se) => {
       const { e, f, t } = se;
       const a = new THREE.Vector3(f.gx + f.w / 2, f.h * HZ, f.gy + f.d / 2);
@@ -462,15 +512,18 @@ export class AtlasScene {
       }
       const n = 24 + (e.via?.length || 0) * 12;
       const geo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(n));
-      const line = new THREE.Line(geo, e.dashed ? dashMat : solidMat);
+      const mat = (e.dashed ? dashMat : solidMat).clone();     // its own, so hover and selection can brighten it alone
+      const line = new THREE.Line(geo, mat);
       if (e.dashed) line.computeLineDistances();
       line.renderOrder = 2;
       const proxy = new THREE.Mesh(new THREE.TubeGeometry(curve, n, 0.16, 5, false), proxyMat);
       proxy.visible = false;                                   // raycast only
-      const end = new THREE.Mesh(endGeo, endMat); end.position.copy(z);
-      this.content.add(line, proxy, end);
-      this.disposables.push(geo, proxy.geometry);
-      const rec: EdgeRec = { e: se, curve, len: curve.getLength(), line, proxy };
+      const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, n, 0.035, 6, false), tubeMat);
+      tube.visible = false; tube.renderOrder = 4;
+      const end = new THREE.Mesh(endGeo, endMat.clone()); end.position.copy(z);
+      this.content.add(line, proxy, tube, end);
+      this.disposables.push(geo, mat, proxy.geometry, tube.geometry, end.material as THREE.Material);
+      const rec: EdgeRec = { e: se, key: edgeKey(e), curve, len: curve.getLength(), line, mat, base: mat.opacity, proxy, tube, end };
       proxy.userData.edge = rec;
       this.edges.push(rec); this.pickables.push(proxy);
       if (e.flow) for (let k = 0; k < 2; k++) {
@@ -512,6 +565,7 @@ export class AtlasScene {
     this.light.shadow.needsUpdate = true;
 
     this.blocks.forEach((r) => this.paintBlock(r));
+    this.rebuildOutlines();
     this.reset(false);
     this.labelsDirty = true;
     this.invalidate();
@@ -548,7 +602,7 @@ export class AtlasScene {
     const prev = this.hovered; this.hovered = rec;
     if (prev) this.paintBlock(prev);
     if (rec) this.paintBlock(rec);
-    this.canvas.style.cursor = rec ? 'pointer' : 'grab';
+    this.canvas.style.cursor = rec || this.hoveredEdge ? 'pointer' : 'grab';
     this.hooks.onHoverBlock(rec ? rec.b : null, ev);
     this.invalidate();
   }
@@ -561,15 +615,20 @@ export class AtlasScene {
     on('pointermove', (e) => {
       if (this.press && !this.press.moved && Math.abs(e.clientX - this.press.x) + Math.abs(e.clientY - this.press.y) > DRAG_PX) {
         this.press.moved = true; this.suppressClick = true;
-        this.setHover(null, e); if (this.hoveredEdge) { this.hoveredEdge = null; this.hooks.onHoverEdge(null, e); }
+        this.setHover(null, e); this.leaveEdge(e);
         return;
       }
       if (this.press?.moved || e.pointerType === 'touch') return;
       const p = this.pick(e);
       this.setHover(p.block || null, e);
       const edge = p.block ? null : p.edge || null;
-      if (edge !== this.hoveredEdge) { this.hoveredEdge = edge; this.hooks.onHoverEdge(edge ? edge.e : null, e); }
-      else if (edge) this.hooks.onHoverEdge(edge.e, e);
+      if (edge !== this.hoveredEdge) {
+        const prev = this.hoveredEdge; this.hoveredEdge = edge;
+        if (prev) this.paintEdge(prev);
+        if (edge) this.paintEdge(edge);
+        if (!p.block) this.canvas.style.cursor = edge ? 'pointer' : 'grab';
+        this.hooks.onHoverEdge(edge ? edge.e : null, e); this.invalidate();
+      } else if (edge) this.hooks.onHoverEdge(edge.e, e);
     });
     const up = (e: PointerEvent) => {
       const pr = this.press; this.press = null;
@@ -577,16 +636,21 @@ export class AtlasScene {
       this.suppressClick = false;
       if (e.button !== 0 && e.pointerType === 'mouse') return;
       const p = this.pick(e);
-      this.hooks.onClick(p.block ? p.block.b : null);
+      this.hooks.onClick(p.block ? { block: p.block.b } : p.edge ? { edge: p.edge.e } : {});
     };
     on('pointerup', up); on('pointercancel', () => { this.press = null; });
-    on('pointerleave', (e) => { this.setHover(null, e); if (this.hoveredEdge) { this.hoveredEdge = null; this.hooks.onHoverEdge(null, e); } });
+    on('pointerleave', (e) => { this.setHover(null, e); this.leaveEdge(e); });
     on('dblclick', (e) => {
       if (this.suppressClick) return;
       const p = this.pick(e);
-      if (p.block) { this.hooks.onDblClick(p.block.b); this.focus(p.block.b.id); }
+      if (p.block) { this.hooks.onDblClick({ block: p.block.b }); this.focus(p.block.b.id); }
+      else if (p.edge) { this.hooks.onDblClick({ edge: p.edge.e }); this.focusEdge(p.edge.key); }
     });
     on('contextmenu', (e) => e.preventDefault());
+  }
+  private leaveEdge(e: PointerEvent) {
+    const prev = this.hoveredEdge; if (!prev) return;
+    this.hoveredEdge = null; this.paintEdge(prev); this.hooks.onHoverEdge(null, e); this.invalidate();
   }
   private unbind: (() => void)[] = [];
   private bindKeys() {

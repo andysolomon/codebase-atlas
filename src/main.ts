@@ -58,7 +58,7 @@ function setRepoParam(key: 'repo' | 'atlas' | null, value?: string) {
   const u = new URL(location.href);
   u.searchParams.delete('repo'); u.searchParams.delete('atlas');
   if (key && value) u.searchParams.set(key, value);
-  history.replaceState(null, '', u.pathname + u.search);
+  history.replaceState(null, '', u.pathname + u.search + u.hash);   // keep #inside / #trace / #edge
 }
 
 // ── the repository currently on screen ──
