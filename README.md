@@ -26,6 +26,9 @@ bun run preview
 | `src/trail.ts` | The repositories opened this session, for the topbar's `◀` `▶`. |
 | `src/analyze/ai/browser-cache.ts` | What the browser has already paid a model for, so it is never bought twice. |
 | `src/analyze/aliases.ts` | What a repo calls its own code — workspace names, `tsconfig` paths, the go module. |
+| `src/analyze/resolve.ts` | Where an import points, used by both the map and the scan. |
+| `src/analyze/references.ts` | How much the repo leans on each file, which decides what is worth reading. |
+| `src/analyze/tarball.ts` | A whole repository in one request. CLI only — CORS refuses it in a browser. |
 | `src/analyze/ai/` | Optional AI analysis: decides what the blocks are and writes the prose. |
 | `api/enrich.ts` | Vercel Function that runs one AI pass, for the in-browser scan. |
 | `scripts/atlas.ts` | CLI: `bun run atlas <path \| github-url>`. |
@@ -50,13 +53,26 @@ statements); the prose is templated from those facts, so treat it as a map, not 
 Imports are resolved through the repository's own configuration, so a monorepo draws as one system
 rather than as a scatter: every `package.json` `name` in the tree, `tsconfig`/`jsconfig`
 `compilerOptions.paths`, and `go.mod`'s module path. Without that, `@acme/shared` reads as a
-third-party dependency and the edge between two of your own packages is never drawn.
+third-party dependency and the edge between two of your own packages is never drawn. A specifier that
+names what the build will emit resolves too — `./x.js` written in TypeScript is `x.ts`.
+
+**What gets read matters more than how much.** A scan that cannot read everything reads what the code
+leans on: it takes a first tranche by shape, asks what that tranche imported, and spends the rest of
+its budget there. A module fifty files reach for outranks any file nothing imports, whatever its size
+— ranking by size alone picks bundles, fixtures and vendored blobs. Manifests and READMEs are read on
+a separate allowance, so a monorepo's hundred `package.json` files never displace the code. The same
+counts order the symbol evidence the partition is shown, so the model is told about load-bearing files
+rather than large ones.
 
 **1. From a GitHub URL, in the browser.** Type `github.com/owner/repo` (or `owner/repo`,
 `owner/repo@branch`) into the `⌕ OPEN REPO` field in the topbar, or open
 `/?repo=owner/repo` directly. The tree comes from the GitHub API (2 calls — the
 unauthenticated limit is 60/hour) and file contents from `raw.githubusercontent.com`
-for up to 400 code files. Public repos only; nothing leaves your browser.
+for up to 400 code files, chosen as above. Public repos only; nothing leaves your browser.
+
+A browser cannot take the shortcut the CLI takes: GitHub's tarball URL redirects to
+`codeload.github.com`, which allows only GitHub's own origin, so the archive is refused before the
+bytes arrive. Hence the budget, and hence spending it carefully.
 
 **2. From a local folder, in the browser.** Press `⌂ LOCAL FOLDER` in the topbar and choose a
 directory. Chromium opens it through `showDirectoryPicker()`, which never descends into
@@ -65,7 +81,10 @@ the whole tree and filters afterwards — slower on a big checkout, same result.
 are read for imports, exactly as with a GitHub scan. **Nothing is uploaded**: the scan runs in the
 tab, and `✦ ANALYZE` sends only the evidence packs the browser builds, never the files.
 
-**3. From a local folder, with the CLI.**
+**3. From a local folder or a GitHub URL, with the CLI.** No CORS, so a GitHub scan here pulls the
+whole repository as a single archive instead of fetching files one at a time — for a 16,000-file
+monorepo that is 7 seconds and 12,958 files read, against two minutes and 400. If the archive cannot
+be had (a private repo, an unreachable ref) it falls back to reading files one by one.
 
 ```sh
 bun run atlas .                               # this repo
@@ -243,9 +262,17 @@ Point it at something stronger than the default when the analysis matters:
 
 ```sh
 # .env.local
-ATLAS_ENRICH_MODEL=spacexai/grok-4.6              # a better set of blocks, ~$0.19 an atlas
+ATLAS_ENRICH_MODEL=spacexai/grok-4.6              # everything on a better model, ~$0.19 an atlas
 ATLAS_ENRICH_MODEL=minimax-direct/MiniMax-M3      # no Vercel setup; needs only MINIMAX_API_KEY
+ATLAS_ENRICH_PARTITION_MODEL=spacexai/grok-4.6    # only the one call that matters — see below
 ```
+
+**Spend where it counts.** `ATLAS_ENRICH_PARTITION_MODEL` points the *first* pass somewhere better and
+leaves the rest on the ordinary model. Deciding what the blocks are is a single call, and it sets the
+quality of everything after it: narrate describes the blocks it is handed, and compose traces a journey
+through them. One call at a good model against a dozen at a cheap one costs a few cents and lifts the
+whole map — the same trade as the CLI's `--model-partition`. The browser is told which model runs each
+pass, so its cache misses cleanly when you change either.
 
 **Nothing is bought twice.** Two caches sit in `localStorage`, mirroring what `.atlas-cache/` does for
 the CLI:

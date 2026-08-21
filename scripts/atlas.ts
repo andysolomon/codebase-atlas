@@ -22,6 +22,7 @@
 import { readdir, readFile, stat, writeFile, mkdir } from 'node:fs/promises';
 import { basename, join, relative, resolve } from 'node:path';
 import { buildAtlas, loadGitHub, parseGitHub, type RepoFile, type RepoSource } from '../src/analyze';
+import { loadTarball, tarballAvailable } from '../src/analyze/tarball.js';
 import { CONTEXT_FILE, IGNORED_DIRS, isCode, isIgnoredPath } from '../src/analyze/ignore';
 import { enrichAtlas, planEnrichment } from '../src/analyze/ai';
 import { credentialStatus, DEFAULT_MODEL } from '../src/analyze/ai/provider';
@@ -52,6 +53,26 @@ async function loadLocal(root: string): Promise<RepoSource> {
   let ref = 'local';
   try { ref = (await readFile(join(abs, '.git', 'HEAD'), 'utf8')).trim().replace(/^ref: refs\/heads\//, '') || 'local'; } catch { /* not a git repo */ }
   return { name: basename(abs), ref, files };
+}
+
+/** The whole tree in one request. `ref` is resolved first, because the archive URL needs a real one
+    and the atlas prints it next to the repository name. */
+async function scanByTarball(gh: { owner: string; repo: string; ref?: string }, onProgress: (p: { phase: string; done: number; total: number; message?: string }) => void): Promise<RepoSource> {
+  const token = process.env.GITHUB_TOKEN;
+  let ref = gh.ref;
+  if (!ref) {
+    const r = await fetch(`https://api.github.com/repos/${gh.owner}/${gh.repo}`, {
+      headers: { Accept: 'application/vnd.github+json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) throw new Error(`GitHub API ${r.status}`);
+    ref = (await r.json()).default_branch as string;
+  }
+  const { files, truncated } = await loadTarball(gh.owner, gh.repo, ref, { token, onProgress });
+  if (!files.length) throw new Error('the archive held no files');
+  return {
+    name: `${gh.owner}/${gh.repo}`, ref, files,
+    ...(truncated ? { note: 'The repository was read from one archive; content past the byte budget was left unread.' } : {}),
+  };
 }
 
 async function main() {
@@ -91,10 +112,19 @@ async function main() {
   if (gh) {
     log(`scanning github.com/${gh.owner}/${gh.repo}${gh.ref ? '@' + gh.ref : ''} …`);
     let last = '';
-    src = await loadGitHub(gh, {
-      token: process.env.GITHUB_TOKEN,
-      onProgress: (p) => { const m = p.phase === 'content' ? `  reading ${p.done}/${p.total}` : `  ${p.phase}: ${p.message || ''}`; if (m !== last && (p.phase !== 'content' || p.done % 25 === 0 || p.done === p.total)) { log(m); last = m; } },
-    });
+    const onProgress = (p: { phase: string; done: number; total: number; message?: string }) => {
+      const m = p.phase === 'content' ? `  reading ${p.done}/${p.total}` : `  ${p.phase}: ${p.message || ''}`;
+      if (m !== last && (p.phase !== 'content' || p.done % 25 === 0 || p.done === p.total)) { log(m); last = m; }
+    };
+    // One archive instead of several hundred files: outside a browser nothing refuses it, and it is
+    // the difference between reading a few hundred files of a large repository and reading all of it.
+    // If it fails for any reason — a private repo, a ref that is not there, a network that objects —
+    // the per-file path still works, so it is tried and not depended on.
+    src = tarballAvailable() ? await scanByTarball(gh, onProgress).catch((e: Error) => {
+      log(`  archive unavailable (${e.message}); falling back to reading files one at a time`);
+      return null;
+    }) ?? await loadGitHub(gh, { token: process.env.GITHUB_TOKEN, onProgress })
+      : await loadGitHub(gh, { token: process.env.GITHUB_TOKEN, onProgress });
   } else {
     log(`scanning ${resolve(target)} …`);
     src = await loadLocal(target);
