@@ -6,3 +6,6 @@ dist
 # Locally materialised agent skills — pinned by skills-lock.json, fetched per machine
 .agents/
 .claude/
+
+# generated atlases (bun run atlas …)
+public/atlases/*.json

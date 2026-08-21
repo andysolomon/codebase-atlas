@@ -52,7 +52,18 @@ export class Atlas extends HTMLElement {
   private _data: AtlasData | null = null;
   /** Supply the dataset programmatically. Falls back to window.ATLAS_DATA if never set. */
   get data(): AtlasData | null { return this._data; }
-  set data(d: AtlasData | null) { this._data = d; if (d && this.isConnected && !this.D) this.bootIfReady(); }
+  set data(d: AtlasData | null) {
+    this._data = d;
+    if (!d || !this.isConnected) return;
+    if (!this.booted) { this.bootIfReady(); return; }
+    // Swap datasets in place: reset view state and rebuild.
+    this.sel = null; this.inside = null; this.traceI = -1; this.dots = [];
+    this.D = d; this.byId = {}; d.STRUCTURES.forEach((s) => { this.byId[s.id] = s; });
+    this.setHash('');
+    this.build();
+  }
+  /** Optional hook: when set, the topbar shows an OPEN REPO field and calls this with the typed value. */
+  openRepo: ((query: string) => void) | null = null;
 
   private D!: AtlasData;
   private byId: Record<string, Structure> = {};
@@ -135,6 +146,16 @@ export class Atlas extends HTMLElement {
     statRow.appendChild(cell('REPOSITORY', esc(D.repo)));
     D.stats.forEach(([k, v]) => statRow.appendChild(cell(k, esc(v))));
     bar.appendChild(statRow);
+    if (this.openRepo) {
+      const form = el('form', `display:flex;align-items:center;gap:0;margin:0 0 0 12px;flex:none;align-self:center`);
+      const inp = el('input', `font-family:${MONO};font-size:10px;letter-spacing:.06em;background:none;border:1.5px solid ${T.ink};border-right:none;color:${T.ink};padding:7px 9px;width:220px;outline:none;box-sizing:border-box;height:30px`);
+      inp.placeholder = 'github.com/owner/repo'; inp.spellcheck = false; inp.autocomplete = 'off';
+      inp.value = this.getAttribute('repo-query') || '';
+      const go = el('button', `font-family:${MONO};font-size:10px;letter-spacing:.12em;background:${T.ink};border:1.5px solid ${T.ink};color:${T.bg};padding:7px 11px;cursor:pointer;white-space:nowrap;height:30px;box-sizing:border-box`, '⌕ OPEN REPO');
+      form.appendChild(inp); form.appendChild(go);
+      form.onsubmit = (ev) => { ev.preventDefault(); const q = inp.value.trim(); if (q) this.openRepo!(q); };
+      bar.appendChild(form);
+    }
     const fb = el('button', `font-family:${MONO};font-size:10px;letter-spacing:.12em;background:none;border:1.5px solid ${T.ink};color:${T.ink};padding:7px 11px;cursor:pointer;align-self:center;margin:0 12px;white-space:nowrap`);
     const setFB = () => { fb.textContent = this.flowOn() ? '❚❚ PAUSE THE FLOW' : '▶ RESUME THE FLOW'; };
     setFB();
@@ -252,7 +273,7 @@ export class Atlas extends HTMLElement {
       const { gx, gy, w, d, h } = s;
       const Bg = P(gx + w, gy, 0), Cg = P(gx + w, gy + d, 0), Dg = P(gx, gy + d, 0);
       const At = P(gx, gy, h), Bt = P(gx + w, gy, h), Ct = P(gx + w, gy + d, h), Dt = P(gx, gy + d, h);
-      const g = svgEl('g', { style: 'cursor:pointer' });
+      const g = svgEl('g', { style: 'cursor:pointer', 'data-id': s.id });
       const faceL = svgEl('polygon', { points: pts([Dt, Ct, Cg, Dg]), fill: T.faceA, stroke: T.ink, 'stroke-width': 1.2, 'stroke-linejoin': 'round' });
       const faceLh = svgEl('polygon', { points: pts([Dt, Ct, Cg, Dg]), fill: 'url(#atlasHA)', stroke: 'none' });
       const faceR = svgEl('polygon', { points: pts([Ct, Bt, Bg, Cg]), fill: T.faceB, stroke: T.ink, 'stroke-width': 1.2, 'stroke-linejoin': 'round' });
@@ -342,20 +363,29 @@ export class Atlas extends HTMLElement {
       this.applyVB();
     }, { passive: false });
     let drag: { x: number; y: number; vb: [number, number, number, number]; moved: boolean } | null = null;
-    svg.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, vb: this.vb.slice() as [number, number, number, number], moved: false }; svg.setPointerCapture(e.pointerId); svg.style.cursor = 'grabbing'; });
+    // NB: pointer capture is taken only once a real drag begins. Capturing on pointerdown
+    // retargets the following pointerup/click/dblclick to the <svg>, which silently breaks
+    // block selection and double-click-to-go-inside.
+    svg.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; drag = { x: e.clientX, y: e.clientY, vb: this.vb.slice() as [number, number, number, number], moved: false }; });
     svg.addEventListener('pointermove', (e) => {
       if (!drag) return;
+      if (!drag.moved) {
+        if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) <= 4) return;
+        drag.moved = true; svg.setPointerCapture(e.pointerId); svg.style.cursor = 'grabbing'; this.tipHide();
+      }
       const sc = this.vb[2] / svg.clientWidth;
       const dx = (e.clientX - drag.x) * sc, dy = (e.clientY - drag.y) * sc;
-      if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 4) drag.moved = true;
       this.vb = [drag.vb[0] - dx, drag.vb[1] - dy, drag.vb[2], drag.vb[3]];
       this.applyVB();
     });
-    svg.addEventListener('pointerup', (e) => {
-      const wasDrag = drag && drag.moved; drag = null; svg.style.cursor = '';
+    const end = (e: PointerEvent) => {
+      const wasDrag = !!(drag && drag.moved); drag = null; svg.style.cursor = '';
+      if (wasDrag) { if (svg.hasPointerCapture(e.pointerId)) svg.releasePointerCapture(e.pointerId); return; }
       const tgt = e.target as Element;
-      if (!wasDrag && (tgt === svg || tgt.tagName === 'defs')) { this.sel = null; if (this.traceI >= 0) this.endTrace(); else this.syncUI(); }
-    });
+      if (tgt === svg || tgt.tagName === 'defs') { this.sel = null; if (this.traceI >= 0) this.endTrace(); else this.syncUI(); }
+    };
+    svg.addEventListener('pointerup', end);
+    svg.addEventListener('pointercancel', end);
   }
   loop(t: number) {
     if (this.dead) return;
@@ -421,7 +451,7 @@ export class Atlas extends HTMLElement {
       const [id, sentence] = D.TRACE[this.traceI];
       const s = this.byId[id];
       Pn.innerHTML = `
-        <div style="font-size:9px;letter-spacing:.18em;color:${T.dim}">TRACE — ONE SLIDER DRAG, END TO END</div>
+        <div style="font-size:9px;letter-spacing:.18em;color:${T.dim}">TRACE — ${esc(D.traceTitle || 'ONE SLIDER DRAG')}, END TO END</div>
         <div style="font-size:30px;font-weight:700;margin:10px 0 2px">${String(this.traceI + 1).padStart(2, '0')}<span style="color:${T.dim};font-size:15px"> / ${D.TRACE.length}</span></div>
         <div style="font-size:12px;letter-spacing:.1em;margin-bottom:14px">${s.code} · ${esc(s.name.toUpperCase())}</div>
         <div style="font-size:13px;line-height:1.75;border-left:3px solid ${T.ink};padding-left:13px">${this.rich(sentence)}</div>
@@ -469,7 +499,7 @@ export class Atlas extends HTMLElement {
       ${this.hRule("HOW IT'S BUILT")}
       ${D.OVERVIEW_HOW.map((p) => `<p style="font-size:12.5px;line-height:1.75;margin:0 0 11px">${this.rich(p)}</p>`).join('')}
       <div style="border:1.5px solid ${T.ink};padding:11px 13px;font-size:11px;line-height:1.7;margin-top:18px">${this.rich(D.HOW_TO_READ)}</div>
-      <button id="pTrace" style="${btn};background:${T.ink};color:${T.bg};margin-top:18px;width:100%">▶ TRACE ONE SLIDER DRAG — ${D.TRACE.length} STEPS</button>`;
+      <button id="pTrace" style="${btn};background:${T.ink};color:${T.bg};margin-top:18px;width:100%">▶ TRACE ${esc(D.traceTitle || 'ONE SLIDER DRAG')} — ${D.TRACE.length} STEPS</button>`;
     (Pn.querySelector('#pTrace') as HTMLButtonElement).onclick = () => this.startTrace();
   }
 }
