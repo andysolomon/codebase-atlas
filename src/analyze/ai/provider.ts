@@ -12,8 +12,9 @@ export const DEFAULT_MODEL = 'minimax/minimax-m3';
 
 const MINIMAX_DIRECT = /^minimax-direct\//;
 
-/** Tokens actually spent. `known: false` means the provider told us nothing — which is not the same
-    as zero, and must never be reported as zero. */
+/** Tokens actually spent. `known` means every pass reported its usage; when it is false the figures
+    are a LOWER BOUND — some pass spent tokens it did not account for. A lower bound is worth printing;
+    silence is not, and a fabricated zero is worse than either. */
 export interface Usage { input: number; output: number; known: boolean }
 export const noUsage = (): Usage => ({ input: 0, output: 0, known: false });
 export const addUsage = (a: Usage, b: Usage): Usage => ({

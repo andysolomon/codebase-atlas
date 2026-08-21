@@ -66,42 +66,132 @@ Without `--ai`, every block is a folder and every sentence is a template over by
 a model decides what the blocks *are* — concepts rather than folders — and writes the cards, the
 overview and one traced user journey. **The scan keeps sole authority over every number**: sizes,
 heights, positions, import edges and file lists are computed exactly as before, from the model's
-choice of blocks.
+choice of blocks. A block card goes from this:
+
+> `[[src/]]` — 11 files, 101 KB of text, mostly TypeScript and CSS. The largest file is engine.ts (32 KB).
+
+to this:
+
+> The engine's renderer: a single `PlanetViewport` class that draws a planet, its moons, its rings, and
+> their orbits, and that drives the procedural surface, atmosphere, and gas shaders. It is the only place
+> the app turns `PlanetParams` and a `SystemDef` into pixels.
+
+#### Getting a key
 
 ```sh
-bun run atlas . --ai                                    # cheap default
-bun run atlas . --ai --model spacexai/grok-4.6          # any AI Gateway model id
-bun run atlas . --ai --model-partition anthropic/claude-opus-4.8   # spend where it counts
-bun run atlas . --ai --dry-run                          # token estimate, makes no calls
-bun run atlas . --ai --explain                          # where each headline number came from
+vercel link && vercel env pull        # OIDC, no long-lived key to rotate — preferred
+export AI_GATEWAY_API_KEY=...         # or a gateway key, for CI or an unlinked machine
 ```
 
-Set `AI_GATEWAY_API_KEY` (or run `vercel link && vercel env pull`, which uses OIDC and needs no
-long-lived key). To try it with no Vercel setup at all, `--model minimax-direct/MiniMax-M3` talks to
-MiniMax's Anthropic-compatible endpoint with just `MINIMAX_API_KEY`.
+To try it with no Vercel setup at all, `--model minimax-direct/MiniMax-M3` talks to MiniMax's
+Anthropic-compatible endpoint and needs only `MINIMAX_API_KEY`.
 
-Three passes — decide the blocks, describe each one, write the front matter. Everything a model
-returns is checked against the scan before it can touch the map: a path that does not exist, a block
-id that was never drawn, an edge that is not on the map, or a headline number citing no evidence is
-dropped and reported. Prose is trimmed to what a card can hold. **Any pass that fails keeps the
-templated prose for that part**, so an `--ai` build is never worse than a plain one. Results are
-cached in `.atlas-cache/` by prompt, so re-running is free.
+#### Examples
 
-Measured against `src/data/arc-worlds.ts` — a map of `../arc-worlds` that a human wrote, which makes
-it a real held-out target — using `bun scripts/eval-atlas.ts <atlas.json>`:
+```sh
+bun run atlas . --ai                                # cheap default (minimax/minimax-m3)
+bun run atlas ../some-repo --ai                     # any local folder
+bun run atlas owner/repo --ai                       # any public GitHub repo
+
+bun run atlas . --ai --dry-run                      # token estimate; makes no calls, needs no key
+bun run atlas . --ai --explain                      # print where every headline number came from
+bun run atlas . --ai --no-cache                     # ignore .atlas-cache and re-ask
+
+bun run atlas . --ai --model spacexai/grok-4.6      # any AI Gateway model id
+bun run atlas . --ai --model minimax/minimax-m3 \
+                     --model-partition spacexai/grok-4.6    # spend only where it counts
+```
+
+`--model-partition` is worth knowing about. Deciding what the blocks are is **one call** but sets the
+quality of everything after it, so pointing that single call at a stronger model costs a couple of
+cents and lifts the whole map.
+
+Check the result against the hand-written atlas:
+
+```sh
+bun scripts/eval-atlas.ts public/atlases/arc-worlds.json --verbose
+```
+
+#### Models and cost
+
+One atlas of a 179-file repository measured at **49,979 input / 14,299 output tokens** — six calls plus
+retries. (`--dry-run` estimates ~28k input; the rest is retries, so treat the estimate as a floor.) Any
+model id the [AI Gateway](https://ai-gateway.vercel.sh/v1/models) serves works. Prices are per million
+tokens; cost is for that one atlas:
+
+| Model id | in | out | per atlas | vs. Opus |
+| --- | --- | --- | --- | --- |
+| `spacexai/grok-4.1-fast-reasoning` | $0.20 | $0.50 | **$0.017** | 35× cheaper |
+| `minimax/minimax-m3` *(default)* | $0.30 | $1.20 | **$0.032** | 19× cheaper |
+| `google/gemini-3.1-flash-lite` | $0.25 | $1.50 | **$0.034** | 18× cheaper |
+| `anthropic/claude-haiku-4.5` | $1.00 | $5.00 | $0.121 | 5× cheaper |
+| `spacexai/grok-4.6` | $2.00 | $6.00 | $0.186 | 3× cheaper |
+| `anthropic/claude-sonnet-5` | $2.00 | $10.00 | $0.243 | 2.5× cheaper |
+| `anthropic/claude-opus-4.8` | $5.00 | $25.00 | $0.607 | — |
+
+The default sits at the cheap end on purpose: mapping ten repositories costs about a third of a dollar,
+against six dollars on Opus. Splitting the work — `--model minimax/minimax-m3 --model-partition
+spacexai/grok-4.6` — buys a better set of blocks for roughly **$0.05**, because the partition is a
+single call.
+
+Two things to know. Grok is namespaced `spacexai/` on the Gateway, not `xai/`. And Cursor Composer is
+not on the Gateway at all — it is reachable only through the `cursor-agent` CLI, which would need a
+separate adapter.
+
+**Cheap models are not free of trouble.** Roughly one pass in four needs a retry, and results vary run
+to run. That is designed for rather than fought: a pass retries, then re-asks with the JSON Schema
+spelled out, then falls back to templated prose for that part alone. Run `--explain` and read the
+citations before trusting a headline number.
+
+#### What stops it making things up
+
+Three passes — decide the blocks, describe each one, write the front matter. Everything a model returns
+is checked against the scan before it can touch the map:
+
+- a path the scan never saw is dropped;
+- a block id that was never drawn, or an edge that is not on the map, is dropped;
+- a headline number citing no evidence is dropped;
+- prose is trimmed to what a card can actually hold.
+
+Everything rejected is reported, never silently accepted. **Any pass that fails keeps the templated
+prose for that part**, so an `--ai` build is never worse than a plain one — including with no key, a
+bad key, or no network. Results are cached in `.atlas-cache/` by prompt and model, so re-running after
+a partial failure only re-asks what failed.
+
+#### Does it work?
+
+`src/data/arc-worlds.ts` is a map of `../arc-worlds` that a human wrote, which makes it a real
+held-out target rather than a matter of taste. `bun scripts/eval-atlas.ts` scores against it:
+
+One `--ai` run on `minimax/minimax-m3`, quoted as it came out:
 
 | | plain | `--ai` |
 | --- | --- | --- |
-| hand-written block names recovered | 39% | 82% |
-| bespoke groups (`THE ENGINE`, `TERRAIN V2`, `LEGACY`) | 4/7, plus 4 generic | 7/7, none generic |
-| blocks with written prose | 0/22 | 18/24 |
-| trace | 6 import hops | 14 steps, revisits blocks |
+| hand-written block names recovered | 39% | **68%** |
+| bespoke groups (`THE ENGINE`, `TERRAIN V2`, …) | 4/7, plus 4 generic | **5/7, none generic** |
+| blocks with written prose | 0/22 | **24/24** |
+| trace | 6 import hops | **14 steps, revisits a block** |
+| trace title | `ONE IMPORT CHAIN` | **`ONE PLANET SCULPT AND SAVE`** |
+| headline stats about the system | 0/7 | **7/7** |
 
-**In the browser.** When `?repo=` scans a repository, the templated map is drawn immediately and then
-upgraded in place if `/api/enrich` is deployed. The endpoint accepts only a known pass name and a pack
-of named fields and returns only atlas-shaped JSON — there is no free-text field and the client cannot
-choose the model, so it cannot be used as a general LLM proxy. Rate limit it with a Vercel Firewall
-rule. Nothing in `src/` imports `ai` or `zod`, so the browser bundle stays dependency-free.
+Across runs on this model, name recall lands between 68% and 82% and bespoke groups between 3/7 and
+7/7 — one run named the trace `ONE SLIDER DRAG`, which is what the human called it. Re-run to
+re-roll: cached passes cost nothing, so only what failed is asked again. A stronger
+`--model-partition` narrows the spread.
+
+#### In the browser
+
+When `?repo=` scans a repository the templated map is drawn immediately, then upgraded in place if
+`/api/enrich` is deployed. The browser builds the evidence packs and validates the replies against its
+own file list, so the server never sees the repository — only a pack of named strings.
+
+The endpoint accepts a known pass name and a whitelist of named fields at bounded sizes, and returns
+only atlas-shaped JSON. There is no free-text field and the client cannot choose the model, so it is
+not usable as a general LLM proxy. **Put a Vercel Firewall rate-limit rule in front of `/api/enrich`
+before deploying it publicly** — it spends money on behalf of anyone who loads the page. Set
+`ATLAS_ENRICH_MODEL` to pin the model it uses.
+
+Nothing under `src/` imports `ai` or `zod`, so the browser bundle stays dependency-free.
 
 ### How the scan becomes a map
 

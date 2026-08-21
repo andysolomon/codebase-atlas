@@ -114,7 +114,9 @@ async function main() {
       model, partitionModel, useCache: !args.includes('--no-cache'), onProgress: log,
     });
     atlas = r.data;
-    if (r.usage.known) log(`  spent ${r.usage.input.toLocaleString()} in / ${r.usage.output.toLocaleString()} out tokens`);
+    if (r.usage.input || r.usage.output) {
+      log(`  spent ${r.usage.known ? '' : 'at least '}${r.usage.input.toLocaleString()} in / ${r.usage.output.toLocaleString()} out tokens`);
+    }
     for (const note of r.report.notes) log(`  note: ${note}`);
     if (r.report.dropped.length) {
       log(`  rejected ${r.report.dropped.length} claim${r.report.dropped.length === 1 ? '' : 's'} the scan could not confirm:`);

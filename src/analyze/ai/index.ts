@@ -212,7 +212,7 @@ export async function enrichAtlas(source: RepoSource, opts: EnrichOptions = {}):
     models: { partition: partitionModel, narrate: model, compose: model },
     generatedAt: new Date().toISOString(),
     ...(fallbacks.length ? { fallbacks } : {}),
-    ...(usage.known ? { usage: { input: usage.input, output: usage.output } } : {}),
+    ...(usage.input || usage.output ? { usage: { input: usage.input, output: usage.output } } : {}),
   };
 
   return { data: final, usage, report, fallbacks, evidence, prompts };
