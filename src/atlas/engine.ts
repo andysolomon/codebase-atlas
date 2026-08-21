@@ -52,7 +52,18 @@ export class Atlas extends HTMLElement {
   private _data: AtlasData | null = null;
   /** Supply the dataset programmatically. Falls back to window.ATLAS_DATA if never set. */
   get data(): AtlasData | null { return this._data; }
-  set data(d: AtlasData | null) { this._data = d; if (d && this.isConnected && !this.D) this.bootIfReady(); }
+  set data(d: AtlasData | null) {
+    this._data = d;
+    if (!d || !this.isConnected) return;
+    if (!this.booted) { this.bootIfReady(); return; }
+    // Swap datasets in place: reset view state and rebuild.
+    this.sel = null; this.inside = null; this.traceI = -1; this.dots = [];
+    this.D = d; this.byId = {}; d.STRUCTURES.forEach((s) => { this.byId[s.id] = s; });
+    this.setHash('');
+    this.build();
+  }
+  /** Optional hook: when set, the topbar shows an OPEN REPO field and calls this with the typed value. */
+  openRepo: ((query: string) => void) | null = null;
 
   private D!: AtlasData;
   private byId: Record<string, Structure> = {};
@@ -135,6 +146,16 @@ export class Atlas extends HTMLElement {
     statRow.appendChild(cell('REPOSITORY', esc(D.repo)));
     D.stats.forEach(([k, v]) => statRow.appendChild(cell(k, esc(v))));
     bar.appendChild(statRow);
+    if (this.openRepo) {
+      const form = el('form', `display:flex;align-items:center;gap:0;margin:0 0 0 12px;flex:none;align-self:center`);
+      const inp = el('input', `font-family:${MONO};font-size:10px;letter-spacing:.06em;background:none;border:1.5px solid ${T.ink};border-right:none;color:${T.ink};padding:7px 9px;width:220px;outline:none;box-sizing:border-box;height:30px`);
+      inp.placeholder = 'github.com/owner/repo'; inp.spellcheck = false; inp.autocomplete = 'off';
+      inp.value = this.getAttribute('repo-query') || '';
+      const go = el('button', `font-family:${MONO};font-size:10px;letter-spacing:.12em;background:${T.ink};border:1.5px solid ${T.ink};color:${T.bg};padding:7px 11px;cursor:pointer;white-space:nowrap;height:30px;box-sizing:border-box`, '⌕ OPEN REPO');
+      form.appendChild(inp); form.appendChild(go);
+      form.onsubmit = (ev) => { ev.preventDefault(); const q = inp.value.trim(); if (q) this.openRepo!(q); };
+      bar.appendChild(form);
+    }
     const fb = el('button', `font-family:${MONO};font-size:10px;letter-spacing:.12em;background:none;border:1.5px solid ${T.ink};color:${T.ink};padding:7px 11px;cursor:pointer;align-self:center;margin:0 12px;white-space:nowrap`);
     const setFB = () => { fb.textContent = this.flowOn() ? '❚❚ PAUSE THE FLOW' : '▶ RESUME THE FLOW'; };
     setFB();
@@ -430,7 +451,7 @@ export class Atlas extends HTMLElement {
       const [id, sentence] = D.TRACE[this.traceI];
       const s = this.byId[id];
       Pn.innerHTML = `
-        <div style="font-size:9px;letter-spacing:.18em;color:${T.dim}">TRACE — ONE SLIDER DRAG, END TO END</div>
+        <div style="font-size:9px;letter-spacing:.18em;color:${T.dim}">TRACE — ${esc(D.traceTitle || 'ONE SLIDER DRAG')}, END TO END</div>
         <div style="font-size:30px;font-weight:700;margin:10px 0 2px">${String(this.traceI + 1).padStart(2, '0')}<span style="color:${T.dim};font-size:15px"> / ${D.TRACE.length}</span></div>
         <div style="font-size:12px;letter-spacing:.1em;margin-bottom:14px">${s.code} · ${esc(s.name.toUpperCase())}</div>
         <div style="font-size:13px;line-height:1.75;border-left:3px solid ${T.ink};padding-left:13px">${this.rich(sentence)}</div>
@@ -478,7 +499,7 @@ export class Atlas extends HTMLElement {
       ${this.hRule("HOW IT'S BUILT")}
       ${D.OVERVIEW_HOW.map((p) => `<p style="font-size:12.5px;line-height:1.75;margin:0 0 11px">${this.rich(p)}</p>`).join('')}
       <div style="border:1.5px solid ${T.ink};padding:11px 13px;font-size:11px;line-height:1.7;margin-top:18px">${this.rich(D.HOW_TO_READ)}</div>
-      <button id="pTrace" style="${btn};background:${T.ink};color:${T.bg};margin-top:18px;width:100%">▶ TRACE ONE SLIDER DRAG — ${D.TRACE.length} STEPS</button>`;
+      <button id="pTrace" style="${btn};background:${T.ink};color:${T.bg};margin-top:18px;width:100%">▶ TRACE ${esc(D.traceTitle || 'ONE SLIDER DRAG')} — ${D.TRACE.length} STEPS</button>`;
     (Pn.querySelector('#pTrace') as HTMLButtonElement).onclick = () => this.startTrace();
   }
 }

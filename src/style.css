@@ -3,3 +3,7 @@ html,body{margin:0;padding:0;background:#cfc79c;font-family:ui-monospace,'SF Mon
 html[data-theme="light"],html[data-theme="light"] body{background:#f1eee4}
 html[data-theme="dark"],html[data-theme="dark"] body{background:#191510}
 a{color:#16130a}a:hover{color:#5a4f28}
+/* Scan status — a bordered paper card, bottom-centre of the map, in the atlas's own voice. */
+#status{display:none;position:fixed;left:50%;bottom:54px;transform:translateX(-50%);z-index:10;max-width:70vw;border:1.5px solid #16130a;background:#cfc79c;color:#16130a;padding:9px 14px;font-size:10px;letter-spacing:.14em;line-height:1.6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+html[data-theme="light"] #status{border-color:#233457;background:#f1eee4;color:#233457}
+html[data-theme="dark"] #status{border-color:#e4d3a1;background:#191510;color:#e4d3a1}

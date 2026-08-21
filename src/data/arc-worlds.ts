@@ -3,7 +3,7 @@ import type { AtlasData } from '../atlas/types';
 // Codebase Atlas DATA — andysolomon/arc-worlds@main (Little Worlds)
 // All file counts and KB figures come from the repo tree scan (2026-08-19).
 export const ARC_WORLDS: AtlasData = {
-  repo: 'arc-worlds · main', product: 'LITTLE WORLDS',
+  repo: 'arc-worlds · main', product: 'LITTLE WORLDS', traceTitle: 'ONE SLIDER DRAG',
   stats: [
     ['TABS', '4'],
     ['WORLD TYPES', '8'],

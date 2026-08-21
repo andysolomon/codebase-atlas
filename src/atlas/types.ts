@@ -69,6 +69,8 @@ export interface AtlasData {
   OVERVIEW_WHAT: string[];
   OVERVIEW_HOW: string[];
   HOW_TO_READ: string;
+  /** Short label for the trace, e.g. 'ONE SLIDER DRAG'. Shown as 'TRACE <title> — N STEPS'. */
+  traceTitle?: string;
   GROUPS: Group[];
   STRUCTURES: Structure[];
   EDGES: Edge[];
