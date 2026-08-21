@@ -301,8 +301,9 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
   let filesRead = 0, importCount = 0;
   for (const f of files) {
     if (!f.content || !isCode(f.path)) continue;
+    const from = units.get(unitOf(f.path));
+    if (!from) continue;          // a partition that does not cover this file; counted as uncovered above
     filesRead++;
-    const from = units.get(unitOf(f.path))!;
     for (const im of extractImports(f.path, f.content)) {
       importCount++;
       const target = resolveInternal(f.path, im.spec, im.pathLike);

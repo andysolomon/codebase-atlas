@@ -132,7 +132,8 @@ export async function enrichAtlas(source: RepoSource, opts: EnrichOptions = {}):
     prompts.push({ label, tokens: estimateTokens(prompt) });
     if (opts.useCache !== false) {
       const hit = readCache<T>(m, prompt);
-      if (hit) { say(`  ${label}: cached`); return { value: hit, error: undefined, salvaged: false }; }
+      // A cache hit costs nothing, and zero is a measured figure — not an unknown one.
+      if (hit) { say(`  ${label}: cached`); usage = addUsage(usage, { input: 0, output: 0, known: true }); return { value: hit, error: undefined, salvaged: false }; }
     }
     const r = await runPass<T>({ model: m, system: SYSTEM, prompt, schema });
     usage = addUsage(usage, r.usage);

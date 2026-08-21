@@ -88,17 +88,28 @@ export function validatePartition(out: PartitionOut, files: RepoFile[], max = 24
         (byTop.get(top) ?? byTop.set(top, []).get(top)!).push(f.path);
       }
       const group = units[units.length - 1].group;
-      for (const [top] of [...byTop.entries()].sort((a, b) => b[1].length - a[1].length)) {
-        if (units.length >= max) break;
-        let key = slug(top || 'root-files');
-        while (keys.has(key)) key += '2';
-        keys.add(key);
-        units.push({ key, name: top ? titleish(top) : 'Root files', group, paths: [top ? top + '/' : ''] });
+      for (const [top, paths] of [...byTop.entries()].sort((a, b) => b[1].length - a[1].length)) {
+        if (units.length < max) {
+          let key = slug(top || 'root-files');
+          while (keys.has(key)) key += '2';
+          keys.add(key);
+          units.push({ key, name: top ? titleish(top) : 'Root files', group, paths: [top ? top + '/' : ''] });
+        } else {
+          // Out of room for new blocks. These files still have to live somewhere, or the scan will
+          // later look up a block that does not exist.
+          units[units.length - 1].paths.push(...paths);
+        }
       }
       report.notes.push(`${left.length} file${left.length === 1 ? '' : 's'} the model left out were placed by folder.`);
     } else if (placed) {
       report.notes.push(`${placed} file${placed === 1 ? '' : 's'} the model did not place were folded into the nearest block.`);
     }
+  }
+
+  const stillLoose = files.filter((f) => !covered(f.path));
+  if (stillLoose.length) {
+    units[units.length - 1].paths.push(...stillLoose.map((f) => f.path));
+    report.notes.push(`${stillLoose.length} file${stillLoose.length === 1 ? '' : 's'} had nowhere else to go.`);
   }
 
   const groups = out.groups.map((g) => g.toUpperCase().trim());

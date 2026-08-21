@@ -4,7 +4,7 @@
 
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { generateText, NoObjectGeneratedError, Output, type LanguageModel } from 'ai';
-import type { z } from 'zod';
+import { z } from 'zod';
 import { salvageCandidates } from './salvage';
 
 /** Cheap by default. Every pass can be pointed somewhere better. */
@@ -86,8 +86,12 @@ export async function runPass<T>(opts: {
   try {
     const model = resolveModel(spec);
     if (attempt >= 2) {
+      // Text mode drops the SDK's structured-output machinery, which is also the only thing that was
+      // telling the model what the keys are called. Without the schema spelled out here it invents
+      // its own field names from the prose and every answer fails validation.
       const r = await generateText({
-        model, system, prompt,
+        model, system,
+        prompt: `${prompt}\n\nReturn a JSON object matching this JSON Schema exactly, using these exact\nproperty names and nothing else:\n\n${JSON.stringify(z.toJSONSchema(schema as z.ZodType), null, 1)}`,
         maxRetries: opts.maxRetries ?? 2,
         maxOutputTokens: opts.maxOutputTokens ?? 16000,
       });

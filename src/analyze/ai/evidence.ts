@@ -148,7 +148,10 @@ export function composeEvidence(source: RepoSource, data: AtlasData): ComposeEvi
     product: data.product,
     facts: data.stats.map(([k, v]) => `${k}: ${v}`).join('\n'),
     blocks: data.STRUCTURES.map((s) => `${s.id}  [${s.group}]  ${s.name} — ${s.loc}\n    ${s.what.replace(/\n/g, ' ').slice(0, 300)}`).join('\n'),
-    edges: data.EDGES.map((e) => `${e.f}->${e.t}  ${nameOf.get(e.f)} → ${nameOf.get(e.t)}  (${e.pay})`).join('\n'),
+    // Only the edges worth a written label. Asking for all 44 buys noise and a reply long enough
+    // to get truncated; the drawn ones carry the flow.
+    edges: data.EDGES.filter((e) => e.flow || !e.dashed).slice(0, 24)
+      .map((e) => `${e.f}->${e.t}  ${nameOf.get(e.f)} -> ${nameOf.get(e.t)}  (${e.pay})`).join('\n'),
     externals: (data.EXTERNALS ?? []).map((x) => `${x.name} used by ${nameOf.get(x.t) ?? x.t}`).join('\n') || '(none)',
   };
 }
