@@ -31,7 +31,9 @@ function enrichDevEndpoint(mode: string): Plugin {
             req.on('error', reject);
           }) : undefined;
           const mod = await server.ssrLoadModule('/api/enrich.ts');
-          const handler = mod.default as (r: Request) => Promise<Response>;
+          // Resolved by method, exactly as the deployed function is. Reaching for `default` here is
+          // what let a default-exported handler look healthy in dev while production could not call it.
+          const handler = (method === 'POST' ? mod.POST : mod.GET) as (r: Request) => Promise<Response>;
           const out = await handler(new Request('http://localhost/api/enrich', {
             method,
             ...(body != null ? {
