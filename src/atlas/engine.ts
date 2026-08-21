@@ -252,7 +252,7 @@ export class Atlas extends HTMLElement {
       const { gx, gy, w, d, h } = s;
       const Bg = P(gx + w, gy, 0), Cg = P(gx + w, gy + d, 0), Dg = P(gx, gy + d, 0);
       const At = P(gx, gy, h), Bt = P(gx + w, gy, h), Ct = P(gx + w, gy + d, h), Dt = P(gx, gy + d, h);
-      const g = svgEl('g', { style: 'cursor:pointer' });
+      const g = svgEl('g', { style: 'cursor:pointer', 'data-id': s.id });
       const faceL = svgEl('polygon', { points: pts([Dt, Ct, Cg, Dg]), fill: T.faceA, stroke: T.ink, 'stroke-width': 1.2, 'stroke-linejoin': 'round' });
       const faceLh = svgEl('polygon', { points: pts([Dt, Ct, Cg, Dg]), fill: 'url(#atlasHA)', stroke: 'none' });
       const faceR = svgEl('polygon', { points: pts([Ct, Bt, Bg, Cg]), fill: T.faceB, stroke: T.ink, 'stroke-width': 1.2, 'stroke-linejoin': 'round' });
@@ -342,20 +342,29 @@ export class Atlas extends HTMLElement {
       this.applyVB();
     }, { passive: false });
     let drag: { x: number; y: number; vb: [number, number, number, number]; moved: boolean } | null = null;
-    svg.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, vb: this.vb.slice() as [number, number, number, number], moved: false }; svg.setPointerCapture(e.pointerId); svg.style.cursor = 'grabbing'; });
+    // NB: pointer capture is taken only once a real drag begins. Capturing on pointerdown
+    // retargets the following pointerup/click/dblclick to the <svg>, which silently breaks
+    // block selection and double-click-to-go-inside.
+    svg.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; drag = { x: e.clientX, y: e.clientY, vb: this.vb.slice() as [number, number, number, number], moved: false }; });
     svg.addEventListener('pointermove', (e) => {
       if (!drag) return;
+      if (!drag.moved) {
+        if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) <= 4) return;
+        drag.moved = true; svg.setPointerCapture(e.pointerId); svg.style.cursor = 'grabbing'; this.tipHide();
+      }
       const sc = this.vb[2] / svg.clientWidth;
       const dx = (e.clientX - drag.x) * sc, dy = (e.clientY - drag.y) * sc;
-      if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 4) drag.moved = true;
       this.vb = [drag.vb[0] - dx, drag.vb[1] - dy, drag.vb[2], drag.vb[3]];
       this.applyVB();
     });
-    svg.addEventListener('pointerup', (e) => {
-      const wasDrag = drag && drag.moved; drag = null; svg.style.cursor = '';
+    const end = (e: PointerEvent) => {
+      const wasDrag = !!(drag && drag.moved); drag = null; svg.style.cursor = '';
+      if (wasDrag) { if (svg.hasPointerCapture(e.pointerId)) svg.releasePointerCapture(e.pointerId); return; }
       const tgt = e.target as Element;
-      if (!wasDrag && (tgt === svg || tgt.tagName === 'defs')) { this.sel = null; if (this.traceI >= 0) this.endTrace(); else this.syncUI(); }
-    });
+      if (tgt === svg || tgt.tagName === 'defs') { this.sel = null; if (this.traceI >= 0) this.endTrace(); else this.syncUI(); }
+    };
+    svg.addEventListener('pointerup', end);
+    svg.addEventListener('pointercancel', end);
   }
   loop(t: number) {
     if (this.dead) return;
