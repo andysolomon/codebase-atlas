@@ -1,0 +1,5 @@
+/* Codebase Atlas — host page. The atlas element paints its own paper; the page only zeroes margins. */
+html,body{margin:0;padding:0;background:#cfc79c;font-family:ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace}
+html[data-theme="light"],html[data-theme="light"] body{background:#f1eee4}
+html[data-theme="dark"],html[data-theme="dark"] body{background:#191510}
+a{color:#16130a}a:hover{color:#5a4f28}

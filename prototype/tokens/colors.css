@@ -1,0 +1,22 @@
+:root{
+  --paper:#cfc79c; --paper-raised:#ddd6b2; --paper-sunken:#c8c093;
+  --face-shade:#bdb488; --face-tint:#cec696;
+  --ink:#16130a;
+  --ink-dim:rgba(22,19,10,.55); --ink-hair:rgba(22,19,10,.28); --ink-faint:rgba(22,19,10,.16);
+  --surface:var(--paper); --surface-card:var(--paper-raised);
+  --text-color:var(--ink); --text-muted:var(--ink-dim);
+  --border-color:var(--ink);
+  --highlight-bg:var(--ink); --highlight-fg:var(--paper);
+}
+[data-theme="blueprint"]{
+  --paper:#f1eee4; --paper-raised:#fdfcf7; --paper-sunken:#eae6d8;
+  --face-shade:#dcd7c6; --face-tint:#e9e5d6;
+  --ink:#233457;
+  --ink-dim:rgba(35,52,87,.55); --ink-hair:rgba(35,52,87,.28); --ink-faint:rgba(35,52,87,.14);
+}
+[data-theme="dark-luxe"]{
+  --paper:#191510; --paper-raised:#2c251b; --paper-sunken:#14100c;
+  --face-shade:#211b13; --face-tint:#271f16;
+  --ink:#e4d3a1;
+  --ink-dim:rgba(228,211,161,.55); --ink-hair:rgba(228,211,161,.3); --ink-faint:rgba(228,211,161,.16);
+}

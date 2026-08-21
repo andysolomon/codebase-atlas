@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+html,body{margin:0;padding:0;background:#191510}
+a{color:#e4d3a1}a:hover{color:#c9b478}
+</style>
+<script src="./atlas-data.js"></script>
+</helmet>
+<x-import component-from-global-scope="codebase-atlas" from="./atlas-engine.js" paper="{{ paper }}" flow="{{ flow }}" hint-size="100%,860px"></x-import>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;paper&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;options&quot;:[&quot;tan&quot;,&quot;light&quot;,&quot;dark&quot;],&quot;section&quot;:&quot;Atlas&quot;},&quot;flow&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Atlas&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      paper: this.props.paper ?? 'dark',
+      flow: String(this.props.flow ?? true),
+    };
+  }
+}
+</script>
+</body>
+</html>

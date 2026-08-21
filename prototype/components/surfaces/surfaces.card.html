@@ -1,0 +1,27 @@
+<!-- @dsCard group="Components" viewport="700x230" name="Surfaces" subtitle="PaperCard, ListRow" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>body{margin:0;background:var(--paper);padding:16px;font-family:var(--font-mono);color:var(--ink)}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const NS = (() => { for (const k in window) { try { const v = window[k]; if (v && typeof v === 'object' && v.PaperCard && v.ListRow) return v; } catch (e) {} } return {}; })();
+const { PaperCard, ListRow } = NS;
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'14px'}}>
+    <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+      <PaperCard><b>VE · Viewport engine</b><br/>Owns the scene, the GPU resources and the animation loop.</PaperCard>
+      <PaperCard hatched>Hatched panel — advisory or storage.</PaperCard>
+    </div>
+    <div style={{border:'var(--border-w) solid var(--border-color)',padding:'6px 0',height:'fit-content'}}>
+      <ListRow code="AP" label="App shell" meta="55 KB" />
+      <ListRow code="VE" label="Viewport engine" meta="139 KB" selected />
+      <ListRow code="DB" label="Database" meta="4 KB" />
+    </div>
+  </div>
+);
+</script></body></html>

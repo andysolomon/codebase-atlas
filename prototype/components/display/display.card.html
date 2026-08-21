@@ -1,0 +1,29 @@
+<!-- @dsCard group="Components" viewport="700x210" name="Display" subtitle="StatCell, CodeBadge, RuleHeading" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>body{margin:0;background:var(--paper);padding:16px;font-family:var(--font-mono);color:var(--ink)}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const NS = (() => { for (const k in window) { try { const v = window[k]; if (v && typeof v === 'object' && v.StatCell && v.CodeBadge) return v; } catch (e) {} } return {}; })();
+const { StatCell, CodeBadge, RuleHeading } = NS;
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
+    <div style={{display:'flex',border:'var(--border-w) solid var(--border-color)',width:'fit-content'}}>
+      <StatCell label="Repository" value="arc-worlds · main" />
+      <StatCell label="World types" value="8" />
+      <StatCell label="Test files" value="21" last />
+    </div>
+    <div style={{display:'flex',gap:'10px',alignItems:'center'}}>
+      <CodeBadge code="VE" size="lg" />
+      <CodeBadge code="V2" />
+      <CodeBadge code="DB" selected />
+    </div>
+    <RuleHeading>What it does</RuleHeading>
+  </div>
+);
+</script></body></html>

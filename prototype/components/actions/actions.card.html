@@ -1,0 +1,24 @@
+<!-- @dsCard group="Components" viewport="700x170" name="Actions" subtitle="Button — outline, solid, ghost, sizes" -->
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../styles.css">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="../../_ds_bundle.js"></script>
+<style>body{margin:0;background:var(--paper);padding:20px;font-family:var(--font-mono)}</style>
+</head><body><div id="root"></div>
+<script type="text/babel">
+const NS = (() => { for (const k in window) { try { const v = window[k]; if (v && typeof v === 'object' && v.Button && v.PaperCard) return v; } catch (e) {} } return {}; })();
+const { Button } = NS;
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <div style={{display:'flex',gap:'10px',alignItems:'center',flexWrap:'wrap'}}>
+    <Button>Outline</Button>
+    <Button variant="solid">▶ Solid</Button>
+    <Button variant="ghost">Ghost</Button>
+    <Button size="sm">Small</Button>
+    <Button size="lg">⌖ Large</Button>
+    <Button disabled>Disabled</Button>
+  </div>
+);
+</script></body></html>
