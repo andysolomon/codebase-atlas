@@ -10,3 +10,5 @@ dist
 # generated atlases (bun run atlas …)
 public/atlases/*.json
 .atlas-cache/
+.vercel
+.env*

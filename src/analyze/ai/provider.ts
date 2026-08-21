@@ -128,7 +128,16 @@ export async function runPass<T>(opts: {
         process.stderr.write(`  raw response kept at ${at}\n`);
       } catch { /* debugging must never break the run */ }
     }
-    const message = String((e as Error)?.message || e).split('\n')[0].slice(0, 300);
+    let message = String((e as Error)?.message || e).split('\n')[0].slice(0, 300);
+    // The Gateway's free-tier message is long, repeats per failed call, and buries the one thing
+    // worth knowing: this is a quota, not a bad prompt.
+    if (/rate.?limit|free tier/i.test(message)) {
+      // The free tier's allowance does not stretch to a whole atlas even one call at a time, so
+      // point at credits rather than at concurrency.
+      message = /free tier/i.test(message)
+        ? 'the AI Gateway free tier is rate limited - add credits, or use --model minimax-direct/MiniMax-M3'
+        : 'rate limited by the provider - try --concurrency 1';
+    }
     const terminal = isTerminal(message);
     // Shape failures are worth one more ask; credential and model failures are not.
     if (!terminal && attempt < 2) {
