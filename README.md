@@ -37,3 +37,5 @@ atlas.data = await fetch('/atlases/my-repo.json').then((r) => r.json());
 ```
 
 The element also falls back to `window.ATLAS_DATA` if `data` is never set, so the prototype's plain-script data files work unchanged.
+
+<!-- CI gate verification -->
