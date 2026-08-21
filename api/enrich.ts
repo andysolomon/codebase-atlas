@@ -27,6 +27,12 @@ const MODEL = process.env.ATLAS_ENRICH_MODEL || 'minimax/minimax-m3';
     an arbitrary model id remains unreachable from the client. Set it empty to withdraw the offer. */
 const FALLBACK_MODEL = process.env.ATLAS_ENRICH_FALLBACK_MODEL ?? 'minimax-direct/MiniMax-M3';
 
+/** Deciding what the blocks are is one call, and it sets the quality of everything after it: the
+    narrate pass describes the blocks it is given, and the compose pass traces a journey through them.
+    A partition worth having is therefore the cheapest upgrade on this endpoint — one call at a better
+    model, against a dozen at the ordinary one. Unset means the ordinary model does it. */
+const PARTITION_MODEL = process.env.ATLAS_ENRICH_PARTITION_MODEL || '';
+
 /** Whether the credentials that model needs are actually here. Offering a fallback that cannot run
     is worse than offering none. */
 function ready(model: string): boolean {
@@ -34,6 +40,14 @@ function ready(model: string): boolean {
   const creds = credentialStatus();
   return model.startsWith('minimax-direct/') ? creds.minimaxDirect : creds.gateway;
 }
+
+/** Which model each pass runs on. The browser is told, because it records what wrote a cached map and
+    must miss cleanly when the answer would now come from somewhere better. */
+const modelFor = (pass: string, fallback: boolean): string => {
+  if (fallback && FALLBACK_MODEL && ready(FALLBACK_MODEL)) return FALLBACK_MODEL;
+  if (pass === 'partition' && PARTITION_MODEL && ready(PARTITION_MODEL)) return PARTITION_MODEL;
+  return MODEL;
+};
 
 /** What the instructions currently say, in eight characters. The browser mixes this into its cache
     keys: it builds the evidence but never sees the prompt, so without it, editing prompts.ts would
@@ -84,7 +98,8 @@ async function handler(req: Request): Promise<Response> {
   // for ever — and it needs to know whether a fallback is worth offering before it offers it.
   if (req.method === 'GET') {
     const fallback = FALLBACK_MODEL !== MODEL && ready(FALLBACK_MODEL) ? FALLBACK_MODEL : '';
-    return new Response(JSON.stringify({ ok: true, model: MODEL, fallback, prompts: PROMPTS_VERSION }), {
+    const partition = modelFor('partition', false);
+    return new Response(JSON.stringify({ ok: true, model: MODEL, partition, fallback, prompts: PROMPTS_VERSION }), {
       status: 200,
       headers: { 'content-type': 'application/json', 'cache-control': 'public, max-age=60' },
     });
@@ -104,8 +119,8 @@ async function handler(req: Request): Promise<Response> {
   }
 
   const evidence = (body.evidence ?? {}) as Record<string, unknown>;
-  // A boolean, deliberately: it picks one of this deployment's two models and cannot name a third.
-  const wanted = body.fallback === true && FALLBACK_MODEL && ready(FALLBACK_MODEL) ? FALLBACK_MODEL : MODEL;
+  // A boolean, deliberately: it picks among models this deployment named and cannot name another.
+  const wanted = modelFor(String(body.pass ?? ''), body.fallback === true);
   try {
     switch (body.pass) {
       case 'partition': {

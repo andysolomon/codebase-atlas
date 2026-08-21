@@ -11,10 +11,13 @@
     sends only the evidence packs the browser builds. */
 
 import { CONTEXT_FILE, IGNORED_DIRS, isCode, isIgnoredPath } from './ignore.js';
+import { countReferences, readingScore } from './references.js';
+import { createResolver } from './resolve.js';
 import type { OnProgress, RepoFile, RepoSource } from './types.js';
 
 export interface LocalOptions {
-  /** Max code files whose content is read for import analysis. Default 400. */
+  /** Max code files whose content is read for import analysis. Default 1500 — a local disk is not a
+      rate-limited API, so the budget that keeps a GitHub scan polite is wasted caution here. */
   maxContentFiles?: number;
   /** Skip content for files larger than this (bytes). Default 300 KB. */
   maxFileBytes?: number;
@@ -126,22 +129,47 @@ async function buildSource(name: string, found: Found[], opts: LocalOptions): Pr
   const byPath = new Map(found.map((f) => [f.path, f]));
   const maxBytes = opts.maxFileBytes ?? 300 * 1024;
 
-  const want = files.filter((x) => (MANIFEST.test(x.path) || CONTEXT_FILE.test(x.path) || isCode(x.path)) && x.size <= maxBytes && x.size > 0);
-  const score = (x: RepoFile) => (MANIFEST.test(x.path) ? 1e12 : 0) + (CONTEXT_FILE.test(x.path) ? 5e11 : 0) + (/(^|\/)(index|main|app|server)\./.test(x.path) ? 1e9 : 0) + x.size - x.path.split('/').length * 1000;
-  want.sort((a, b) => score(b) - score(a));
-  const picked = want.slice(0, opts.maxContentFiles ?? 400);
+  const sized = files.filter((x) => x.size <= maxBytes && x.size > 0);
+  // Manifests and READMEs on their own allowance, so a monorepo's hundred package.json files do not
+  // take the budget away from the code while carrying the workspace names an import needs to resolve.
+  const docs = sized.filter((x) => MANIFEST.test(x.path) || CONTEXT_FILE.test(x.path))
+    .sort((a, b) => a.path.split('/').length - b.path.split('/').length)
+    .slice(0, 300);
 
+  const want = sized.filter((x) => isCode(x.path) && !MANIFEST.test(x.path) && !CONTEXT_FILE.test(x.path));
+  const shape = (x: RepoFile) => (/(^|\/)(index|main|app|server)\./.test(x.path) ? 1e9 : 0) + x.size - x.path.split('/').length * 1000;
+  want.sort((a, b) => shape(b) - shape(a));
+
+  const cap = opts.maxContentFiles ?? 1500;
+  const total = docs.length + Math.min(cap, want.length);
   let done = 0;
-  for (const x of picked) {
-    try { x.content = await byPath.get(x.path)!.read(); }
-    catch { /* an unreadable file costs an edge, not the map */ }
-    done++;
-    if (done % 20 === 0 || done === picked.length) opts.onProgress?.({ phase: 'content', done, total: picked.length, message: x.path });
+  const readAll = async (batch: RepoFile[]) => {
+    for (const x of batch) {
+      try { x.content = await byPath.get(x.path)!.read(); }
+      catch { /* an unreadable file costs an edge, not the map */ }
+      done++;
+      if (done % 20 === 0 || done === total) opts.onProgress?.({ phase: 'content', done, total, message: x.path });
+    }
+  };
+
+  await readAll(docs);
+  if (want.length <= cap) {
+    await readAll(want);
+    return { name, ref: 'local', files };
   }
 
-  const skipped = want.length - picked.length;
+  // Too big to read whole: spend half the budget on shape, then the rest on what that half imported.
+  const first = Math.max(1, Math.round(cap / 2));
+  await readAll(want.slice(0, first));
+  const refs = countReferences(files, createResolver(files));
+  const rest = want.slice(first).sort((a, b) => readingScore(b, refs) - readingScore(a, refs));
+  const second = rest.slice(0, cap - first);
+  const cited = second.filter((x) => refs.counts.has(x.path)).length;
+  await readAll(second);
+
   return {
     name, ref: 'local', files,
-    ...(skipped > 0 ? { note: `Content was read for the ${picked.length} largest code files; ${skipped} smaller ones were skipped.` } : {}),
+    note: `Content was read for ${cap} of ${want.length} code files — the largest first, then ${cited} `
+      + `chosen because the rest of the repository imports them. ${want.length - cap} were not read.`,
   };
 }

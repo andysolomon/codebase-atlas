@@ -2,9 +2,10 @@
    Every number in the output is a fact from the scan; the prose is templated from those facts. */
 
 import type { AtlasData, ChildPart, Edge, External, Group, Structure, TraceStep } from '../atlas/types.js';
-import { isOwnPackage, readAliases, resolveAlias } from './aliases.js';
+import { isOwnPackage } from './aliases.js';
 import { extOf, isCode, isIgnoredPath, isText, langOf } from './ignore.js';
 import { extractImports, packageName } from './imports.js';
+import { createResolver } from './resolve.js';
 import type { Narration, Partition, RepoFile, RepoSource, UnitSpec } from './types.js';
 
 export interface BuildOptions {
@@ -206,7 +207,6 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
     else exactOf.set(p, spec.key);
   }
   prefixes.sort((a, b) => b[0].length - a[0].length);
-  const prefixKeys = new Set(prefixes.map(([d]) => d));
   const prefixOf = (path: string): string | null => {
     for (const [d, k] of prefixes) if (path === d || path.startsWith(d + '/')) return k;
     return null;
@@ -263,49 +263,11 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
   });
 
   // ── imports → edges ──
-  const srcDir = files.some((f) => f.path.startsWith('src/')) ? 'src' : '';
-  const topSegs = new Set(files.map((f) => f.path.split('/')[0]));
-  // What the repository calls its own code: workspace package names, tsconfig `paths`, a go module
-  // path. Without these, `@acme/shared` reads as a third-party dependency and the edge is lost.
-  const aliases = readAliases(files);
-  const exists = (prefix: string) => files.some((f) => f.path === prefix || f.path.startsWith(prefix + '/') || f.path.startsWith(prefix + '.'));
+  // Where an import points is answered by `resolve.ts`, which the scan also uses to decide what is
+  // worth reading. Here the answer is turned into a block.
+  const resolver = createResolver(files);
   const resolveInternal = (fromPath: string, spec: string, pathLike: boolean): string | null => {
-    let p: string | null = null;
-    const ext = extOf(fromPath);
-    if (spec.startsWith('.')) {
-      if (ext === 'py') { // from ..x import y
-        const ups = spec.match(/^\.+/)![0].length; let d = dirOf(fromPath);
-        for (let i = 1; i < ups; i++) d = dirOf(d);
-        p = normalize(d + '/' + spec.slice(ups).replace(/\./g, '/'));
-      } else p = normalize(dirOf(fromPath) + '/' + spec);
-    } else if (/^[@~$#]\//.test(spec)) p = normalize((srcDir ? srcDir + '/' : '') + spec.slice(2));
-    else if (spec.startsWith('/')) p = normalize(spec);
-    else if (ext === 'rs') {
-      if (/^(crate|self|super)\b/.test(spec)) {
-        const parts = spec.split('::');
-        if (parts[0] === 'crate') p = normalize((srcDir || '') + '/' + parts.slice(1).join('/'));
-        else if (parts[0] === 'self') p = normalize(dirOf(fromPath) + '/' + parts.slice(1).join('/'));
-        else p = normalize(dirOf(dirOf(fromPath)) + '/' + parts.slice(1).join('/'));
-      } else if (pathLike) p = normalize(dirOf(fromPath) + '/' + spec);
-    } else {
-      // What the repo's own config says this name means, checked against the scan before it is
-      // believed — a rule pointing at nothing must not draw an edge to nothing.
-      for (const cand of resolveAlias(aliases, spec)) {
-        if (!exists(cand)) continue;
-        const u = unitOf(cand);
-        if (units.has(u)) return u;
-      }
-      // bare specifier that is really an in-repo path: "app/models", "src/x", "lib.foo" (python), go module suffixes
-      const asPath = ext === 'py' ? spec.replace(/\./g, '/') : spec;
-      const first = asPath.split('/')[0];
-      const hits = exists;
-      if (topSegs.has(first) && hits(asPath)) p = asPath;
-      else if (srcDir && hits(srcDir + '/' + asPath)) p = srcDir + '/' + asPath;
-      else if (ext === 'go' && asPath.includes('/')) {
-        const segs = asPath.split('/');
-        for (let i = 1; i < segs.length; i++) { const tail = segs.slice(i).join('/'); if (prefixKeys.has(tail)) { p = tail; break; } }
-      }
-    }
+    const p = resolver(fromPath, spec, pathLike);
     if (p == null) return null;
     const u = unitOf(p);
     return units.has(u) ? u : null;
@@ -330,7 +292,7 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
       } else if (!im.pathLike && !im.spec.startsWith('.') && !/^(node:|bun:|deno:|https?:)/.test(im.spec) && extOf(f.path) !== 'go' && extOf(f.path) !== 'java') {
         const pkg = packageName(im.spec);
         // A package this repository declares is its own, even when the scan never reached its folder.
-        if (isOwnPackage(aliases, im.spec)) continue;
+        if (isOwnPackage(resolver.aliases, im.spec)) continue;
         if (!pkg.startsWith('.') && !/^(os|sys|re|json|typing|pathlib|collections|math|time|datetime|std|core|alloc|io|fs|path|http|crypto|util|events|stream|child_process|url|net|assert|buffer|zlib|querystring|readline|process|tty|cluster|dgram|dns|vm|worker_threads|perf_hooks|string_decoder|v8|module|punycode|inspector|async_hooks|timers|constants|__future__|abc|functools|itertools|logging|subprocess|shutil|random|unittest|dataclasses|enum|io|argparse|copy|csv|hashlib|uuid|tempfile|threading|asyncio|contextlib|inspect|traceback|warnings|operator|string|struct|glob|pickle|base64|decimal|fractions|statistics|textwrap|urllib|http|email|socket|ssl|select|signal|platform|getpass|pprint|queue|heapq|bisect|array|weakref|types|numbers|cmath|codecs|locale|gettext|zipfile|tarfile|gzip|bz2|lzma|sqlite3|xml|html|concurrent|multiprocessing|ctypes|importlib|pkgutil|site|sysconfig|builtins|atexit|gc|dis|ast|token|tokenize|keyword|symtable|compileall|py_compile|zipimport|runpy|unicodedata|stringprep|difflib|shlex|fnmatch|linecache|fileinput|filecmp|stat|mimetypes|mailbox|binascii|quopri|uu|secrets|hmac|ipaddress|selectors|socketserver|xmlrpc|webbrowser|cgi|wsgiref|turtle|tkinter|curses|pdb|profile|cProfile|timeit|trace|tracemalloc|faulthandler|test|doctest|venv|ensurepip|zipapp|errno|mmap|resource|grp|pwd|termios|fcntl|pipes|syslog|posix|nis|spwd|crypt|msvcrt|winreg|winsound)$/.test(pkg) && !/^[A-Z]/.test(pkg)) {
           from.ext.set(pkg, (from.ext.get(pkg) || 0) + 1);
         }

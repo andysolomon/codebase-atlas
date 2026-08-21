@@ -5,6 +5,7 @@
 
 import type { AtlasData } from '../../atlas/types.js';
 import { isCode, isText, langOf } from '../ignore.js';
+import { countReferences } from '../references.js';
 import { extractSymbols, head } from '../symbols.js';
 import type { RepoFile, RepoSource } from '../types.js';
 
@@ -79,16 +80,33 @@ export function repoEvidence(source: RepoSource): RepoEvidence {
     .map((f) => `── ${f.path}\n${f.content!.slice(0, 3000)}`)
     .join('\n\n');
 
-  // The biggest code files are where a repository keeps its meaning.
-  const symbols = files
+  // The files the rest of the repository leans on are where it keeps its meaning. Size decides only
+  // between files nothing was seen to import — on a large tree it picks bundles and fixtures, which is
+  // how a partition ends up naming folders it has never read a line of.
+  //
+  // A bigger tree gets more of these lines, because this is the only place the partition sees code at
+  // all: a tree digest gives it names and byte counts and nothing else. The endpoint caps the field at
+  // 30,000 characters, and the lines below run well under 200, so 140 stays inside it.
+  const refs = countReferences(files);
+  const symbolBudget = Math.max(45, Math.min(140, Math.round(files.length / 60)));
+  const ranked = files
     .filter((f) => f.content && isCode(f.path))
-    .sort((a, b) => b.size - a.size)
-    .slice(0, 45)
-    .map((f) => {
-      const names = extractSymbols(f.path, f.content!, 16);
-      return names.length ? `${f.path} (${kb(f.size)}): ${names.join(', ')}` : `${f.path} (${kb(f.size)})`;
-    })
-    .join('\n');
+    .sort((a, b) => ((refs.counts.get(b.path) ?? 0) - (refs.counts.get(a.path) ?? 0)) || (b.size - a.size))
+    .slice(0, symbolBudget);
+  // Held under the endpoint's 30,000-character limit here, where a whole line can be dropped, rather
+  // than there, where the field is cut wherever the count lands.
+  const symbolLines: string[] = [];
+  let symbolChars = 0;
+  for (const f of ranked) {
+    const cited = refs.counts.get(f.path) ?? 0;
+    const where = `${f.path} (${kb(f.size)}${cited ? `, imported by ${cited}` : ''})`;
+    const names = extractSymbols(f.path, f.content!, 16);
+    const line = names.length ? `${where}: ${names.join(', ')}` : where;
+    if (symbolChars + line.length + 1 > 28_000) break;
+    symbolLines.push(line);
+    symbolChars += line.length + 1;
+  }
+  const symbols = symbolLines.join('\n');
 
   return {
     name: source.name,

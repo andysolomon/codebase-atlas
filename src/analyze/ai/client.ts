@@ -47,8 +47,15 @@ export interface EnrichClientResult {
 }
 
 /** What the endpoint says it would run, asked once per analysis. A GET spends nothing. */
-interface ServerModels { model: string; fallback: string; prompts: string }
-const NO_SERVER: ServerModels = { model: '', fallback: '', prompts: '' };
+interface ServerModels {
+  /** What narrate and compose run on. */
+  model: string;
+  /** What the partition runs on — often the same, sometimes something better. */
+  partition: string;
+  fallback: string;
+  prompts: string;
+}
+const NO_SERVER: ServerModels = { model: '', partition: '', fallback: '', prompts: '' };
 
 async function serverModels(endpoint: string, signal?: AbortSignal): Promise<ServerModels> {
   try {
@@ -56,7 +63,12 @@ async function serverModels(endpoint: string, signal?: AbortSignal): Promise<Ser
     if (!r.ok) return NO_SERVER;
     const b = (await r.json()) as Partial<ServerModels>;
     const str = (v: unknown) => (typeof v === 'string' ? v : '');
-    return { model: str(b.model), fallback: str(b.fallback), prompts: str(b.prompts) };
+    return {
+      model: str(b.model),
+      partition: str(b.partition) || str(b.model),
+      fallback: str(b.fallback),
+      prompts: str(b.prompts),
+    };
   } catch {
     return NO_SERVER;   // an older deployment, or none at all
   }
@@ -84,10 +96,10 @@ async function reason(r: Response): Promise<string> {
   return text.trim().slice(0, 200) || r.statusText;
 }
 
-/** Which model the endpoint used, as it reported it. Set on the first pass that comes back. */
-let servedBy = '';
-
-async function callPass<T>(endpoint: string, pass: string, evidence: unknown, signal?: AbortSignal, fallback?: boolean): Promise<T> {
+/** One pass, and the model that answered it. The model comes back with the value rather than through
+    a shared variable: narrate batches run concurrently, and a global would record whichever of them
+    happened to land last. */
+async function callPass<T>(endpoint: string, pass: string, evidence: unknown, signal?: AbortSignal, fallback?: boolean): Promise<{ value: T; model: string }> {
   const r = await fetch(endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -97,8 +109,7 @@ async function callPass<T>(endpoint: string, pass: string, evidence: unknown, si
   if (!r.ok) throw new PassError(`${r.status} ${await reason(r)}`);
   const body = (await r.json()) as { ok: boolean; value?: T; error?: string; model?: string };
   if (!body.ok || body.value == null) throw new PassError(body.error || 'the model returned nothing usable');
-  if (body.model) servedBy = body.model;
-  return body.value;
+  return { value: body.value, model: typeof body.model === 'string' ? body.model : '' };
 }
 
 /** Returns an enriched atlas, or the plain one if the endpoint is not there. Never throws for a
@@ -108,11 +119,15 @@ export async function enrichInBrowser(source: RepoSource, opts: EnrichClientOpti
   const say = opts.onProgress ?? (() => {});
   const report: Report = { dropped: [], notes: [] };
   const fallbacks: string[] = [];
-  servedBy = '';
 
   const models = await serverModels(endpoint, opts.signal);
-  const primary = models.model;
-  const wanted = opts.useFallback && models.fallback ? models.fallback : primary;
+  // A cached map is only this map if it was written by the models that would write it now — and the
+  // partition may run somewhere better than the rest, so both have to be in the record.
+  const primary = `${models.model}|${models.partition}`;
+  /** What this pass would be answered by, which is what a cached answer for it has to have come from. */
+  const wantedFor = (name: string) => opts.useFallback && models.fallback
+    ? models.fallback
+    : (name === 'partition' ? models.partition || models.model : models.model);
   const fp = fingerprint(source);
   const version = models.prompts || 'unversioned';
   const aKey = atlasKey(fp, version);
@@ -133,15 +148,17 @@ export async function enrichInBrowser(source: RepoSource, opts: EnrichClientOpti
       from any model at all when the point of this run is to finish work already partly paid for. */
   const pass = async <T>(name: string, evidence: unknown): Promise<T> => {
     const key = passKey(name, evidence, version);
+    const wanted = wantedFor(name);
     if (!opts.refresh) {
       const hit = read<CachedPass>(key);
       if (hit && (hit.model === wanted || opts.useFallback)) { spent.add(key); usedModels.add(hit.model); return hit.value as T; }
     }
-    const value = await callPass<T>(endpoint, name, evidence, opts.signal, opts.useFallback);
-    write(key, { model: servedBy || wanted, value } satisfies CachedPass);
+    const answer = await callPass<T>(endpoint, name, evidence, opts.signal, opts.useFallback);
+    const by = answer.model || wanted;
+    write(key, { model: by, value: answer.value } satisfies CachedPass);
     spent.add(key);
-    usedModels.add(servedBy || wanted);
-    return value;
+    usedModels.add(by);
+    return answer.value;
   };
 
   let partition: Partition | undefined;
@@ -193,7 +210,7 @@ export async function enrichInBrowser(source: RepoSource, opts: EnrichClientOpti
 
   data = buildAtlas(source, { partition, narration });
   data.provenance = {
-    models: { server: [...usedModels].join(' + ') || servedBy || 'set by the enrich endpoint' },
+    models: { server: [...usedModels].join(' + ') || 'set by the enrich endpoint' },
     generatedAt: new Date().toISOString(),
     ...(fallbacks.length ? { fallbacks } : {}),
   };
