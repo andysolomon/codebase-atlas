@@ -3,10 +3,10 @@
     Dependency-free and browser-safe on purpose: the in-browser scan builds a pack and POSTs it to
     /api/enrich, so this file must not import `ai`, `zod`, or anything from node. */
 
-import type { AtlasData } from '../../atlas/types';
-import { isCode, isText, langOf } from '../ignore';
-import { extractSymbols, head } from '../symbols';
-import type { RepoFile, RepoSource } from '../types';
+import type { AtlasData } from '../../atlas/types.js';
+import { isCode, isText, langOf } from '../ignore.js';
+import { extractSymbols, head } from '../symbols.js';
+import type { RepoFile, RepoSource } from '../types.js';
 
 const kb = (b: number) => (b < 1024 * 1000 ? `${Math.max(1, Math.round(b / 1024))} KB` : `${(b / 1048576).toFixed(1)} MB`);
 const base = (p: string) => p.slice(p.lastIndexOf('/') + 1);

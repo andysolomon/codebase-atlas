@@ -5,7 +5,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { generateText, NoObjectGeneratedError, Output, type LanguageModel } from 'ai';
 import { z } from 'zod';
-import { salvageCandidates } from './salvage';
+import { salvageCandidates } from './salvage.js';
 
 /** Cheap by default. Every pass can be pointed somewhere better. */
 export const DEFAULT_MODEL = 'minimax/minimax-m3';

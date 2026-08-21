@@ -15,8 +15,8 @@
     the caller's question, answered against the scanned file list — a rule that resolves to nothing
     must not invent an edge. */
 
-import { isIgnoredPath } from './ignore';
-import type { RepoFile } from './types';
+import { isIgnoredPath } from './ignore.js';
+import type { RepoFile } from './types.js';
 
 export interface AliasMap {
   /** Longest-prefix rules from tsconfig-style `paths`, longest `from` first. */

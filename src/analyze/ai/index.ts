@@ -5,16 +5,16 @@
     missing, that part of the atlas keeps the prose `buildAtlas` templated for it — so an enriched
     build is never worse than a plain one. */
 
-import type { AtlasData } from '../../atlas/types';
-import { buildAtlas } from '../build';
-import type { Narration, Partition, RepoSource } from '../types';
+import type { AtlasData } from '../../atlas/types.js';
+import { buildAtlas } from '../build.js';
+import type { Narration, Partition, RepoSource } from '../types.js';
 import { blockEvidence, composeEvidence, estimateTokens, repoEvidence,
-  type BlockEvidence, type ComposeEvidence, type RepoEvidence } from './evidence';
-import { readCache, writeCache } from './cache';
-import { COMPOSE, NARRATE, PARTITION, SYSTEM } from './prompts';
-import { addUsage, DEFAULT_MODEL, noUsage, runPass, type Usage } from './provider';
-import { ComposeOut, NarrateOut, PartitionOut } from './schemas';
-import { statEvidence, validateCompose, validateNarrate, validatePartition, type Report } from './validate';
+  type BlockEvidence, type ComposeEvidence, type RepoEvidence } from './evidence.js';
+import { readCache, writeCache } from './cache.js';
+import { COMPOSE, NARRATE, PARTITION, SYSTEM } from './prompts.js';
+import { addUsage, DEFAULT_MODEL, noUsage, runPass, type Usage } from './provider.js';
+import { ComposeOut, NarrateOut, PartitionOut } from './schemas.js';
+import { statEvidence, validateCompose, validateNarrate, validatePartition, type Report } from './validate.js';
 
 export interface EnrichOptions {
   /** Model for every pass unless overridden. */

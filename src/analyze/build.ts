@@ -1,11 +1,11 @@
 /* Turns a flat file listing (plus whatever content was loaded) into an AtlasData dataset.
    Every number in the output is a fact from the scan; the prose is templated from those facts. */
 
-import type { AtlasData, ChildPart, Edge, External, Group, Structure, TraceStep } from '../atlas/types';
-import { isOwnPackage, readAliases, resolveAlias } from './aliases';
-import { extOf, isCode, isIgnoredPath, isText, langOf } from './ignore';
-import { extractImports, packageName } from './imports';
-import type { Narration, Partition, RepoFile, RepoSource, UnitSpec } from './types';
+import type { AtlasData, ChildPart, Edge, External, Group, Structure, TraceStep } from '../atlas/types.js';
+import { isOwnPackage, readAliases, resolveAlias } from './aliases.js';
+import { extOf, isCode, isIgnoredPath, isText, langOf } from './ignore.js';
+import { extractImports, packageName } from './imports.js';
+import type { Narration, Partition, RepoFile, RepoSource, UnitSpec } from './types.js';
 
 export interface BuildOptions {
   /** Upper bound on the number of blocks. Default 24. */
