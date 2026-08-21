@@ -37,3 +37,46 @@ atlas.data = await fetch('/atlases/my-repo.json').then((r) => r.json());
 ```
 
 The element also falls back to `window.ATLAS_DATA` if `data` is never set, so the prototype's plain-script data files work unchanged.
+
+## Contributing
+
+`main` is protected: every change lands through a pull request that passes the
+**Merge Gate** check. Direct pushes to `main` are rejected.
+
+```sh
+git checkout -b feat/your-change
+# ... work ...
+git commit -m "feat: describe the change"
+gh pr create
+```
+
+### Commit messages
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+Messages are validated in CI by commitlint — there is no local git hook, so a
+malformed message fails the PR rather than blocking the commit.
+
+| Prefix | Release |
+| --- | --- |
+| `fix:` | patch |
+| `feat:` | minor |
+| `feat!:` or a `BREAKING CHANGE:` footer | major |
+| `ci:` `docs:` `chore:` `refactor:` `test:` `perf:` `build:` `style:` | none |
+
+### CI
+
+| Workflow | Trigger | Does |
+| --- | --- | --- |
+| `pr.yml` | pull request | Validate Commits, Typecheck, Build — as separate checks |
+| `merge.yml` | pull request | The same three as one `Merge Gate` status, required to merge |
+| `release.yml` | push to `main` | Runs semantic-release |
+
+### Releases
+
+semantic-release tags the version and publishes a
+[GitHub Release](https://github.com/andysolomon/codebase-atlas/releases) with generated
+notes. **The Releases page is the changelog** — nothing is committed back to `main`,
+because the Actions bot cannot be granted a ruleset bypass on a user-owned repo and a
+blocked push would fail the release before the tag is created.
+
+The package is private and is never published to npm.

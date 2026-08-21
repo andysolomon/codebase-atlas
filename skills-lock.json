@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "arc-conventional-commits": {
+      "source": "andysolomon/arc-skills",
+      "sourceType": "github",
+      "skillPath": "arc-conventional-commits/SKILL.md",
+      "computedHash": "dcf5be9370020dc058da29e8f44c26cd3e6d0b14860de154be784b084f7bd18c"
+    }
+  }
+}
