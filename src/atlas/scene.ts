@@ -36,6 +36,9 @@ const FOV = 38;
 const ORTHO_RADIUS = 160;                            // how far back the ortho camera sits; only depth matters
 const ZOOM_OUT = 2.2, ZOOM_IN = 5;                   // how far past the fit view you may go, either way
 const PAD_PX = 34;
+const MIN_PHI = 0.18;                                // controls.minPolarAngle — almost straight down
+/** The shape of a flight's altitude arc: the exponent on sin(πk). >1 a briefer apex, <1 a broader one. */
+const ARC_SHAPE = 1;
 const DRAG_PX = 4;                                   // pointer travel that turns a click into a drag
 
 export type Projection = 'flat' | 'deep';
@@ -61,9 +64,33 @@ export interface SceneHooks {
   onDblClick(hit: SceneHit): void;
   /** Camera heading changed — `turn` is radians away from the default isometric heading. */
   onView(turn: number, projection: Projection): void;
-  /** Arrow keys are spoken for elsewhere (the trace), so the scene leaves them alone. */
+  /** Arrow keys are spoken for elsewhere (the trace, the ride), so the scene leaves them alone. */
   arrowsTaken(): boolean;
+  /** The viewport changed size. A live flight has already been re-aimed by the time this fires. */
+  onResize?(): void;
 }
+
+/** Why a flight did not land. `'user'` is any public camera action — fit, focus, a key — which only a
+    person reaches; the ride never calls those, it calls `flyTo`, and its own replacements say so. */
+export type FlightEnd = 'user' | 'gesture' | 'replaced' | 'projection' | 'data' | 'dispose';
+/** What a flight can frame: exactly the things the map has drawn. */
+export type FlightTarget = { all: true } | { block: string } | { edge: [string, string] } | { blocks: string[] };
+export interface Flight {
+  to: FlightTarget;
+  /** 0 = a flat slide. 1 = a full hop: the camera pulls back over the flight and settles in on arrival. */
+  arc?: number;
+  /** Derived from the work the move does when absent. */
+  ms?: number;
+  /** Heading, radians from the default isometric heading. Absent holds the current heading. */
+  turn?: number;
+  /** Multiplier on the framed zoom: >1 closer than the frame, <1 further. */
+  tighten?: number;
+}
+export interface FlightHandle { readonly id: number; readonly state: 'flying' | 'landed' | 'cancelled'; cancel(): void }
+export interface FlightCallbacks { land?: () => void; cancel?: (why: FlightEnd) => void }
+/** A flight the scene is carrying for someone. The tween slot has one owner at a time, and whoever
+    takes the slot — a gesture, a nav button, a projection switch — tells the owner why. */
+interface FlightRec { id: number; flight: Flight; on: FlightCallbacks; state: 'flying' | 'landed' | 'cancelled' }
 
 interface BlockRec {
   b: SceneBlock; mesh: THREE.Mesh; top: THREE.MeshBasicMaterial; outline: THREE.BufferGeometry;
@@ -80,7 +107,12 @@ interface Dot { rec: EdgeRec; t: number; sprite: THREE.Sprite }
 interface ExtRec { el: HTMLDivElement; at: THREE.Vector3 }
 
 interface CamState { target: THREE.Vector3; theta: number; phi: number; radius: number; zoom: number }
-interface Tween { from: CamState; to: CamState; t0: number; ms: number; done?: () => void }
+interface Tween {
+  from: CamState; to: CamState; t0: number; ms: number; done?: () => void;
+  /** Apex pull-back in nepers and the matching tilt toward plan, both 0 for a flat slide. */
+  lift: number; tilt: number;
+  owner?: FlightRec;
+}
 
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 const reducedMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -131,6 +163,10 @@ export class AtlasScene {
   private needsRender = true;
   private labelsDirty = true;
   private tween: Tween | null = null;
+  /** A paused flight keeps its tween and stops stepping it; resuming shifts t0 by the time stood still. */
+  private frozen = false;
+  private pausedAt = 0;
+  private flightSeq = 0;
   private raf = 0;
   private lastT = 0;
   private dead = false;
@@ -206,7 +242,7 @@ export class AtlasScene {
     c.rotateSpeed = 0.6;
     c.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
     c.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
-    c.addEventListener('start', () => { this.tween = null; this.canvas.style.cursor = 'grabbing'; });
+    c.addEventListener('start', () => { this.cancelFlight('gesture'); this.tween = null; this.canvas.style.cursor = 'grabbing'; });
     c.addEventListener('end', () => { this.canvas.style.cursor = this.hovered || this.hoveredEdge ? 'pointer' : 'grab'; });
     c.addEventListener('change', () => { this.clampTarget(); this.invalidate(); });
     this.applyLimits(c);
@@ -253,29 +289,125 @@ export class AtlasScene {
     this.controls.update();
     this.invalidate();
   }
-  private animateTo(to: Partial<CamState>, ms = 650, done?: () => void) {
+  /** `arc` 0 is a flat slide — every public camera action. 1 is a full hop. A flight with an `owner`
+      replaces the slot's current owner with reason `'replaced'`; one without is a person acting. */
+  private animateTo(to: Partial<CamState>, ms = 650, done?: () => void, arc = 0, owner?: FlightRec) {
+    this.cancelFlight(owner ? 'replaced' : 'user');
+    this.frozen = false;
     const from = this.state();
     const full: CamState = { ...from, ...to, target: (to.target ?? from.target).clone() };
     // turn the short way round
     let dth = full.theta - from.theta;
     dth = Math.atan2(Math.sin(dth), Math.cos(dth));
     full.theta = from.theta + dth;
-    if (reducedMotion() || ms <= 0) { this.applyState(full); done?.(); return; }
-    this.tween = { from, to: full, t0: performance.now(), ms, done };
+    if (reducedMotion() || ms <= 0) { this.tween = null; this.applyState(full); done?.(); return; }
+    const { lift, tilt } = this.arcFor(from, full, arc);
+    this.tween = { from, to: full, t0: performance.now(), ms, done, lift, tilt, owner };
     this.invalidate();
+  }
+  /** The altitude arc of a flight, sized by how far it actually travels in screenfuls, so a hop between
+      neighbours does not launch into orbit, and held under the whole-atlas ceiling the wheel has —
+      `stepTween` writes the zoom directly and MapControls only enforces its limits against a hand. */
+  private arcFor(a: CamState, b: CamState, strength: number): { lift: number; tilt: number } {
+    if (strength <= 0) return { lift: 0, tilt: 0 };
+    const lift = this.arcLift(a, b, strength);
+    const tilt = Math.max(0, Math.min(0.22 * lift, 0.28, Math.min(a.phi, b.phi) - (MIN_PHI + 0.02)));
+    return { lift, tilt };
+  }
+  private arcLift(a: CamState, b: CamState, strength: number): number {
+    const d = Math.hypot(b.target.x - a.target.x, b.target.z - a.target.z);
+    const zm = Math.sqrt(a.zoom * b.zoom);
+    const screen = Math.min(this.host.clientWidth, this.host.clientHeight) / (BASE_PX * zm);
+    const spans = d / Math.max(0.001, screen);
+    const want = strength * Math.log(1 + spans);            // saturating, not linear
+    const room = Math.max(0, Math.log(zm * ZOOM_OUT / this.fitZoom));
+    return Math.min(want, room);
+  }
+  /** Flight time from the work the move does: ground crossed, zoom octaves, quarter turns. */
+  private flightMs(a: CamState, b: CamState): number {
+    const zm = Math.sqrt(a.zoom * b.zoom);
+    const screen = Math.min(this.host.clientWidth, this.host.clientHeight) / (BASE_PX * zm);
+    const spans = Math.hypot(b.target.x - a.target.x, b.target.z - a.target.z) / Math.max(0.001, screen);
+    const octaves = Math.abs(Math.log(b.zoom / a.zoom)) / Math.LN2;
+    const turns = Math.abs(b.theta - a.theta) / (Math.PI / 2);
+    return THREE.MathUtils.clamp(520 + 420 * (spans + octaves + turns), 520, 2400);
   }
   private stepTween(now: number) {
     const tw = this.tween; if (!tw) return;
     const u = Math.min(1, (now - tw.t0) / tw.ms), k = ease(u);
     const f = tw.from, t = tw.to;
+    // a hop rises in the middle: zoom and tilt both dip, and when there is a turn the heading leads
+    // the descent so the camera already faces the destination as it comes down
+    const dip = tw.lift > 0 ? Math.pow(Math.sin(Math.PI * k), ARC_SHAPE) : 0;
+    const kt = tw.lift > 0 ? Math.pow(k, 0.75) : k;
     this.applyState({
       target: f.target.clone().lerp(t.target, k),
-      theta: f.theta + (t.theta - f.theta) * k,
-      phi: f.phi + (t.phi - f.phi) * k,
+      theta: f.theta + (t.theta - f.theta) * kt,
+      phi: f.phi + (t.phi - f.phi) * k - tw.tilt * Math.sin(Math.PI * k),
       radius: f.radius + (t.radius - f.radius) * k,
-      zoom: Math.exp(Math.log(f.zoom) + (Math.log(t.zoom) - Math.log(f.zoom)) * k),
+      zoom: Math.exp(Math.log(f.zoom) + (Math.log(t.zoom) - Math.log(f.zoom)) * k - tw.lift * dip),
     });
     if (u >= 1) { this.tween = null; tw.done?.(); }
+  }
+
+  // ───────────────────────── owned flights ─────────────────────────
+  /** Fly somewhere on behalf of a caller who needs to know how it ends. A handle with callbacks, not a
+      Promise: an interruption is reported in the frame it happens, and a late landing for a flight
+      that was replaced never resumes anyone into a stale state. `land` is always dispatched
+      asynchronously — under reduced motion the flight lands at once, and a caller whose landing
+      starts the next flight would otherwise unwind a whole ride in one stack frame. */
+  flyTo(f: Flight, on: FlightCallbacks = {}): FlightHandle {
+    const rec: FlightRec = { id: ++this.flightSeq, flight: f, on, state: 'flying' };
+    const handle: FlightHandle = { id: rec.id, get state() { return rec.state; }, cancel: () => this.cancelFlight('replaced', rec) };
+    const to = this.resolveFlight(f);
+    if (!to) { rec.state = 'cancelled'; queueMicrotask(() => on.cancel?.('replaced')); return handle; }
+    const from = this.state();
+    const ms = f.ms ?? this.flightMs(from, { ...from, ...to });
+    const land = () => { rec.state = 'landed'; queueMicrotask(() => { if (rec.state === 'landed') on.land?.(); }); };
+    this.animateTo(to, ms, land, f.arc ?? 0, rec);
+    return handle;
+  }
+  /** Freeze where it stands. Cancelling and re-flying on resume would restart the arc from the apex. */
+  pauseFlight() { if (this.tween && !this.frozen) { this.frozen = true; this.pausedAt = performance.now(); } }
+  resumeFlight() {
+    if (!this.frozen) return;
+    this.frozen = false;
+    if (this.tween) { this.tween.t0 += performance.now() - this.pausedAt; this.invalidate(); }
+  }
+  isFlying() { return !!this.tween?.owner; }
+  /** End the owned flight in the slot, if any, and tell its owner why. The slot is cleared before the
+      owner hears, so the owner may start another flight from inside the callback. */
+  private cancelFlight(why: FlightEnd, only?: FlightRec) {
+    const o = this.tween?.owner;
+    if (!o || (only && o !== only)) return;
+    this.tween = null; this.frozen = false;
+    o.state = 'cancelled';
+    o.on.cancel?.(why);
+  }
+  /** Where a flight ends, in camera terms — or null when it names something the map has not drawn.
+      Never moves `fitZoom`: that is the user's frame of reference, and only `fit` / `reset` may. */
+  private resolveFlight(f: Flight): Partial<CamState> | null {
+    const box = this.boxFor(f.to); if (!box) return null;
+    const s = this.state();
+    const theta = f.turn == null ? s.theta : DEFAULT_AZIMUTH + f.turn;
+    const { zoom, center } = this.fitFor({ ...s, theta }, box);
+    return {
+      target: center, theta,
+      zoom: THREE.MathUtils.clamp(zoom * (f.tighten ?? 1), this.fitZoom / ZOOM_OUT, this.fitZoom * ZOOM_IN),
+    };
+  }
+  /** The box a target occupies, padded per kind: a block sits at about a third of frame with its arcs
+      visible, an edge shows both ends as today, a group shows its row. */
+  private boxFor(t: FlightTarget): THREE.Box3 | null {
+    if ('all' in t) return this.fitBox;
+    const ids = 'block' in t ? [t.block] : 'edge' in t ? t.edge : t.blocks;
+    const recs = ids.map((id) => this.byId[id]).filter(Boolean);
+    if (!recs.length || recs.length < ids.length) return null;
+    const box = new THREE.Box3();
+    for (const { b } of recs) box.expandByPoint(new THREE.Vector3(b.gx, 0, b.gy)).expandByPoint(new THREE.Vector3(b.gx + b.w, b.h * HZ, b.gy + b.d));
+    const pad = 'block' in t ? 2.2 : 'edge' in t ? 1 : 1.4;
+    box.expandByVector(new THREE.Vector3(pad, 0.6, pad));
+    return box;
   }
 
   // ───────────────────────── public camera actions ─────────────────────────
@@ -303,9 +435,7 @@ export class AtlasScene {
   /** Frame both ends of an import: the relationship, not one of its ends. */
   focusEdge(key: string) {
     const rec = this.edges.find((r) => r.key === key); if (!rec) return;
-    const box = new THREE.Box3();
-    for (const b of [rec.e.f, rec.e.t]) box.expandByPoint(new THREE.Vector3(b.gx, 0, b.gy)).expandByPoint(new THREE.Vector3(b.gx + b.w, b.h * HZ, b.gy + b.d));
-    box.expandByVector(new THREE.Vector3(1, 0.6, 1));
+    const box = this.boxFor({ edge: [rec.e.f.id, rec.e.t.id] }); if (!box) return;
     const { zoom, center } = this.fitFor(this.state(), box);
     this.animateTo({ target: center, zoom: THREE.MathUtils.clamp(zoom, this.fitZoom / ZOOM_OUT, this.fitZoom * ZOOM_IN) }, 700);
   }
@@ -331,13 +461,16 @@ export class AtlasScene {
   setProjection(p: Projection) {
     if (p === this.projection) return;
     const s = this.state();
-    this.tween = null;
+    // the owner hears once the new controls exist, so it can re-fly from inside the callback
+    const owner = this.tween?.owner;
+    this.tween = null; this.frozen = false;
     this.controls.dispose();
     this.projection = p;
     this.camera = p === 'flat' ? this.ortho : this.persp;
     this.controls = this.makeControls(this.camera);
     this.applyState(s);
     this.invalidate(); this.labelsDirty = true;
+    if (owner) { owner.state = 'cancelled'; owner.on.cancel?.('projection'); }
   }
 
   private fitFor(s: CamState, b = this.fitBox): { zoom: number; center: THREE.Vector3 } {
@@ -465,6 +598,7 @@ export class AtlasScene {
   }
 
   setData(blocks: SceneBlock[], edges: SceneEdge[], externals: SceneExternal[], theme: Theme) {
+    this.cancelFlight('data');
     this.T = theme;
     this.clear();
     this.textures = {};
@@ -707,13 +841,26 @@ export class AtlasScene {
     this.ortho.updateProjectionMatrix();
     this.persp.aspect = w / h; this.persp.updateProjectionMatrix();
     this.applyLimits();
+    // a live flight is re-aimed at the same destination in the new viewport; t0 and ms stay, so the
+    // motion carries on rather than restarting
+    const tw = this.tween;
+    if (tw?.owner) {
+      const to = this.resolveFlight(tw.owner.flight);
+      if (to) {
+        tw.to = { ...tw.to, ...to, target: to.target!.clone() };
+        let dth = tw.to.theta - tw.from.theta; dth = Math.atan2(Math.sin(dth), Math.cos(dth)); tw.to.theta = tw.from.theta + dth;
+        const arc = this.arcFor(tw.from, tw.to, tw.owner.flight.arc ?? 0);
+        tw.lift = arc.lift; tw.tilt = arc.tilt;
+      }
+    }
     this.invalidate();
+    this.hooks.onResize?.();
   }
   private loop(t: number) {
     if (this.dead) return;
     this.raf = requestAnimationFrame(this.loop);
     const dt = Math.min(0.06, (t - this.lastT) / 1000 || 0.016); this.lastT = t;
-    if (this.tween) this.stepTween(t);
+    if (this.tween) { if (!this.frozen) this.stepTween(t); }
     else if (this.controls.update(dt)) this.needsRender = true;   // damping still settling
     if (this.flow && this.dots.length) {
       this.dots.forEach((d) => {
@@ -808,6 +955,7 @@ export class AtlasScene {
   // ───────────────────────── teardown ─────────────────────────
   dispose() {
     this.dead = true;
+    this.cancelFlight('dispose');
     cancelAnimationFrame(this.raf);
     this.ro.disconnect();
     this.unbind.forEach((f) => f()); this.unbind = [];
