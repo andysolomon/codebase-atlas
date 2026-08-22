@@ -7,9 +7,10 @@
    Colour, type and rule weights all come from the design system tokens in src/styles/ (see ./theme).
    Data is supplied via the `data` property (or window.ATLAS_DATA as a fallback). */
 
-import type { AtlasData, Structure, Theme } from './types';
+import type { AtlasData, RideBeat, Structure, Theme } from './types';
 import { AtlasScene, MONO, edgeKey } from './scene';
 import type { Projection, SceneBlock, SceneEdge, SceneExternal } from './scene';
+import { Ride } from './ride';
 import { PAPERS, readTheme, resolvePaper } from './theme';
 
 export { MONO, PAPERS, resolvePaper };
@@ -47,11 +48,15 @@ export class Atlas extends HTMLElement {
     this._data = d;
     if (!d || !this.isConnected) return;
     if (!this.booted) { this.bootIfReady(); return; }
-    // Swap datasets in place: reset view state and rebuild.
+    // Swap datasets in place: reset view state and rebuild. A ride in the link is a ride over whatever
+    // map arrives — `?repo=owner/repo#ride` means scan this repository, then fly over it.
+    const riding = !!this.ride || /#ride(=|$)/.test(location.hash);
+    this.ride?.stop('destroyed');
     this.sel = null; this.selEdge = null; this.inside = null; this.traceI = -1;
     this.D = d; this.byId = {}; d.STRUCTURES.forEach((s) => { this.byId[s.id] = s; });
     this.setHash('');
     this.build();
+    if (riding && d.RIDE?.length) this.startRide(0);
   }
   /** Optional hook: when set, the topbar shows an OPEN REPO field and calls this with the typed value. */
   openRepo: ((query: string) => void) | null = null;
@@ -75,6 +80,10 @@ export class Atlas extends HTMLElement {
   private selEdge: string | null = null;
   private inside: string | null = null;
   private traceI = -1;
+  /** The ride, while one is playing. Mutually exclusive with a trace and with being inside a block. */
+  private ride: Ride | null = null;
+  /** What the ride is pointing at: the blocks held at full opacity while everything else recedes. */
+  private rideKeep: string[] | null = null;
   private booted = false;
   private pollIv: number | null = null;
   private onKey: ((e: KeyboardEvent) => void) | null = null;
@@ -115,13 +124,24 @@ export class Atlas extends HTMLElement {
     this.D = d;
     this.byId = {}; this.D.STRUCTURES.forEach((s) => { this.byId[s.id] = s; });
     this.build();
-    const m = (location.hash || '').match(/#(inside|trace|edge)=([\w,-]+)/);
+    const m = (location.hash || '').match(/#(inside|trace|edge|ride)=?([\w,-]*)/);
     if (m) {
       if (m[1] === 'inside' && this.byId[m[2]]) this.goInside(m[2], true);
       else if (m[1] === 'trace') { this.traceI = Math.max(0, Math.min(this.D.TRACE.length - 1, parseInt(m[2], 10) || 0)); this.applyTrace(); }
       else if (m[1] === 'edge') { const [f, t] = m[2].split(','); if (this.edgeByKey[edgeKey({ f, t })]) this.selectEdge(edgeKey({ f, t }), true); }
+      else if (m[1] === 'ride' && this.D.RIDE?.length) this.startRide(parseInt(m[2], 10) || 0);
     }
     this.onKey = (e: KeyboardEvent) => {
+      if (this.ride) {
+        // a ride owns the keys; SPACE stays with a focused button or field, which it would otherwise re-trigger
+        const t = e.target as HTMLElement | null;
+        const typing = !!t && /^(BUTTON|INPUT|TEXTAREA|SELECT)$/.test(t.tagName);
+        if (e.key === 'Escape') this.ride.stop('exited');
+        else if (e.key === 'ArrowRight') this.ride.step(1);
+        else if (e.key === 'ArrowLeft') this.ride.step(-1);
+        else if (e.key === ' ' && !typing) { e.preventDefault(); this.ride.toggle(); }
+        return;
+      }
       if (e.key === 'Escape') { if (this.inside) this.comeOut(); else if (this.traceI >= 0) this.endTrace(); else { this.clearSelection(); } }
       else if (e.key === 'ArrowRight' && this.traceI >= 0) this.stepTrace(1);
       else if (e.key === 'ArrowLeft' && this.traceI >= 0) this.stepTrace(-1);
@@ -129,6 +149,7 @@ export class Atlas extends HTMLElement {
     window.addEventListener('keydown', this.onKey);
   }
   disconnectedCallback() {
+    this.ride?.stop('destroyed');
     this.scene?.dispose(); this.scene = null;
     if (this.onKey) window.removeEventListener('keydown', this.onKey);
     if (this.pollIv != null) { window.clearInterval(this.pollIv); this.pollIv = null; }
@@ -205,6 +226,13 @@ export class Atlas extends HTMLElement {
       bar.appendChild(ab);
     }
 
+    if (D.RIDE?.length) {
+      const rb = el('button', `${BTN};margin:0 0 0 6px${this.ride ? `;background:${T.ink};border-color:${T.ink};color:${T.bg}` : ''}`, this.ride ? '✕ EXIT THE RIDE' : '▶ RIDE');
+      rb.title = this.ride ? 'Leave the ride (esc)' : `A narrated flight over the map — ${D.RIDE.length} stops`;
+      rb.onclick = () => { if (this.ride) this.ride.stop('exited'); else this.startRide(0); };
+      bar.appendChild(rb);
+    }
+
     const fb = el('button', `${BTN};margin:0 12px`);
     const setFB = () => { fb.textContent = this.flowOn() ? '❚❚ PAUSE THE FLOW' : '▶ RESUME THE FLOW'; };
     setFB();
@@ -222,6 +250,7 @@ export class Atlas extends HTMLElement {
 
   build() {
     const T = this.theme();
+    this.ride?.stop('destroyed');
     this.scene?.dispose(); this.scene = null;
     this.style.cssText = `display:grid;grid-template-rows:auto 1fr;width:100%;height:100vh;min-height:640px;background:${T.bg};color:${T.ink};font-family:${MONO};overflow:hidden;box-sizing:border-box`;
     this.innerHTML = '';
@@ -272,6 +301,7 @@ export class Atlas extends HTMLElement {
   }
   renderScene() {
     const T = this.theme(), D = this.D;
+    this.ride?.stop('destroyed');
     this.scene?.dispose(); this.scene = null;
     this.mapWrap.innerHTML = '';
     this.mapWrap.style.background = T.bg;
@@ -304,6 +334,7 @@ export class Atlas extends HTMLElement {
         this.tip(ev, `<b>${esc(e.f.name)} → ${esc(e.t.name)}</b><br>${esc(e.e.pay || '')}<br><i style="color:${T.dim}">click to read the relationship</i>`);
       },
       onClick: ({ block, edge }) => {
+        if (this.ride && !block && !edge) return;   // the paper is not an exit during a ride
         if (block) this.select(block.id);
         else if (edge) this.selectEdge(edgeKey(edge.e));
         else if (this.traceI >= 0) this.endTrace();
@@ -317,7 +348,8 @@ export class Atlas extends HTMLElement {
         if (this.compassEl) this.compassEl.style.transform = `rotate(${(-turn * 180 / Math.PI).toFixed(1)}deg)`;
         if (this.projEl) this.projEl.textContent = proj === 'flat' ? '▱ FLAT' : '◇ DEEP';
       },
-      arrowsTaken: () => this.traceI >= 0,
+      arrowsTaken: () => this.traceI >= 0 || !!this.ride,
+      onGesture: () => this.ride?.takeOver(),
     });
     this.scene.setFlow(this.flowOn());
     this.scene.setData(blocks, edges, externals, T);
@@ -393,6 +425,10 @@ export class Atlas extends HTMLElement {
       row('ONE FINGER', 'pan'), row('TWO FINGERS', 'pinch to zoom, twist to turn'),
       `<div style="font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);margin:8px 0 6px">KEYBOARD (MAP FOCUSED)</div>`,
       row('ARROWS', 'pan · shift for more'), row('+ / −', 'zoom'), row('F', 'fit'), row('R', 'reset view'), row('N', 'north'), row('ESC', 'back out'),
+      ...(this.D.RIDE?.length ? [
+        `<div style="font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);margin:8px 0 6px">THE RIDE</div>`,
+        row('SPACE', 'pause · resume'), row('← →', 'previous · next stop'), row('ESC', 'exit'), row('THE MAP', 'touching it hands you the controls'),
+      ] : []),
     ].join('');
     const help = el('button', `${BTN};border-bottom:none;text-align:center;width:100%`, '?');
     help.title = 'How to move around'; help.setAttribute('aria-label', help.title);
@@ -426,6 +462,8 @@ export class Atlas extends HTMLElement {
     this.sel = (this.sel === id && !fromTrace) ? null : id;
     this.syncUI();
   }
+  /** Put a block on the card and the map without toggling, touching the hash or moving the camera. */
+  showBlock(id: string) { this.selEdge = null; this.sel = id; this.syncUI(); }
   /** Select an import by its key. Clicking the selected one again lets go of it. */
   selectEdge(key: string, silent?: boolean) {
     if (this.traceI >= 0) this.traceI = -1;
@@ -446,7 +484,7 @@ export class Atlas extends HTMLElement {
     const T = this.theme();
     const edge = this.selEdge ? this.edgeByKey[this.selEdge] : null;
     // a trace dims to its step; a selected import dims to its two ends
-    const keep = this.traceI >= 0 ? [this.D.TRACE[this.traceI][0]] : edge ? [edge.e.f, edge.e.t] : null;
+    const keep = this.rideKeep ?? (this.traceI >= 0 ? [this.D.TRACE[this.traceI][0]] : edge ? [edge.e.f, edge.e.t] : null);
     this.scene?.setSelection(this.sel, keep, edge ? this.selEdge : null);
     if (this.rowEls) for (const id in this.rowEls) {
       const r = this.rowEls[id], on = this.sel === id;
@@ -456,20 +494,60 @@ export class Atlas extends HTMLElement {
   }
   setHash(h: string) { try { history.replaceState(null, '', location.pathname + location.search + (h || '#')); } catch { /* noop */ } }
   goInside(id: string, silent?: boolean) {
+    this.ride?.stop('destroyed');
     this.inside = id; this.sel = null; this.selEdge = null; this.traceI = -1;
     if (!silent) this.setHash('#inside=' + id);
     this.renderScene(); this.renderPanel();
   }
   comeOut(silent?: boolean) {
+    this.ride?.stop('destroyed');
     const was = this.inside;
     this.inside = null; this.sel = was;
     if (!silent) this.setHash('');
     this.renderScene(); this.renderPanel();
   }
-  startTrace() { if (this.inside) this.comeOut(true); this.selEdge = null; this.traceI = 0; this.applyTrace(); }
+  startTrace() { this.ride?.stop('destroyed'); if (this.inside) this.comeOut(true); this.selEdge = null; this.traceI = 0; this.applyTrace(); }
   stepTrace(d: number) { this.traceI = Math.max(0, Math.min(this.D.TRACE.length - 1, this.traceI + d)); this.applyTrace(); }
   endTrace() { this.traceI = -1; this.sel = null; this.selEdge = null; this.setHash(''); this.syncUI(); }
-  applyTrace() { const st = this.D.TRACE[this.traceI]; this.sel = st[0]; this.setHash('#trace=' + this.traceI); this.syncUI(); this.scene?.focus(st[0]); }
+  /** A trace step on the card and the map — everything but the camera, which the caller owns. */
+  showTrace(i: number) { this.traceI = i; const st = this.D.TRACE[i]; this.sel = st[0]; this.setHash('#trace=' + i); this.syncUI(); }
+  applyTrace() { this.showTrace(this.traceI); this.scene?.focus(this.D.TRACE[this.traceI][0]); }
+
+  // ───────────────────────── the ride ─────────────────────────
+  /** Start the narrated flight at stop `from`. Leaves the inside view and the trace; the ride owns
+      the camera from here, through `flyTo`, and hands it back the moment the map is touched. */
+  startRide(from = 0) {
+    const D = this.D;
+    if (!D.RIDE?.length || !this.scene) return;
+    this.ride?.stop('destroyed');
+    if (this.inside) this.comeOut(true);
+    this.traceI = -1; this.sel = null; this.selEdge = null;
+    const groupIds = (name: string) => (D.GROUPS.find(([g]) => g === name)?.[1] ?? []).filter((id) => !!this.byId[id]);
+    this.ride = new Ride(this.mapWrap, this.scene, this.theme(), D.RIDE, D.rideTitle || 'ONE PASS OVER THE SYSTEM', {
+      onBeat: (beat: RideBeat, i) => {
+        this.setHash('#ride=' + i);
+        if (beat.block) { this.rideKeep = [beat.block]; this.showBlock(beat.block); }
+        else if (beat.edge) { this.rideKeep = null; this.sel = null; this.selEdge = edgeKey({ f: beat.edge[0], t: beat.edge[1] }); this.syncUI(); }
+        else if (beat.group) { this.rideKeep = groupIds(beat.group); this.sel = null; this.selEdge = null; this.syncUI(); }
+        else { this.rideKeep = null; this.sel = null; this.selEdge = null; this.syncUI(); }
+      },
+      onEnd: (reason) => {
+        this.ride = null; this.rideKeep = null;
+        if (reason === 'destroyed') return;   // whoever destroyed it is rebuilding the chrome
+        this.sel = null; this.selEdge = null; this.setHash('');
+        this.syncUI(); this.refreshBar();
+      },
+      rich: (s) => this.rich(s),
+      groupIds,
+      toggleProjection: () => {
+        this.projection = this.scene!.getProjection() === 'flat' ? 'deep' : 'flat';
+        this.scene!.setProjection(this.projection);
+        return this.projection;
+      },
+    });
+    this.refreshBar();
+    this.ride.start(from);
+  }
 
   // ───────────────────────── right panel ─────────────────────────
   rich(t: string) { const T = this.theme(); return esc(t).replace(/\[\[(.+?)\]\]/g, `<span style="background:${T.ink};color:${T.bg};padding:0 4px">$1</span>`); }
@@ -557,7 +635,9 @@ export class Atlas extends HTMLElement {
       ${this.hRule("HOW IT'S BUILT")}
       ${D.OVERVIEW_HOW.map((p) => `<p style="font-size:var(--fs-body);line-height:var(--leading-body);margin:0 0 11px">${this.rich(p)}</p>`).join('')}
       <div style="border:var(--border-w) solid ${T.ink};padding:11px 13px;font-size:var(--fs-body);line-height:var(--leading-body);margin-top:18px">${this.rich(D.HOW_TO_READ)}</div>
-      <button id="pTrace" style="${btn};background:${T.ink};color:${T.bg};margin-top:18px;width:100%">▶ TRACE ${esc(D.traceTitle || 'ONE SLIDER DRAG')} — ${D.TRACE.length} STEPS</button>`;
+      ${D.RIDE?.length ? `<button id="pRide" style="${btn};background:${T.ink};color:${T.bg};margin-top:18px;width:100%">▶ TAKE THE RIDE — ${D.RIDE.length} STOPS</button>` : ''}
+      <button id="pTrace" style="${btn};margin-top:${D.RIDE?.length ? 8 : 18}px;width:100%${D.RIDE?.length ? '' : `;background:${T.ink};color:${T.bg}`}">▶ TRACE ${esc(D.traceTitle || 'ONE SLIDER DRAG')} — ${D.TRACE.length} STEPS</button>`;
+    const pr = Pn.querySelector('#pRide') as HTMLButtonElement | null; if (pr) pr.onclick = () => this.startRide(0);
     (Pn.querySelector('#pTrace') as HTMLButtonElement).onclick = () => this.startTrace();
   }
 }
