@@ -1,0 +1,7 @@
+/* Design system: tokens/patterns.css — hatching and the advisory dash. Edit upstream first.
+   The map redraws these on canvas (src/atlas/scene.ts reads the same angles, periods and alphas). */
+:root{
+  --hatch-dense:repeating-linear-gradient(45deg,var(--ink-hair) 0 1px,transparent 1px 4px);
+  --hatch-light:repeating-linear-gradient(-45deg,var(--ink-faint) 0 1px,transparent 1px 5px);
+  --leader-dashed:2.5px 3px; /* stroke-dasharray for advisory / external lines */
+}

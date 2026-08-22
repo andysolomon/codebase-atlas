@@ -3,20 +3,21 @@
    sidebar, right panel, tooltip, trace — is plain DOM. The map itself is a Three.js scene (scene.ts)
    navigated like a map: pan, rotate, tilt, zoom to the cursor. The default camera reproduces the
    prototype's isometric projection exactly.
-   Registers <codebase-atlas paper="tan|light|dark" flow="true|false">.
+   Registers <codebase-atlas paper="tan|blueprint|dark-luxe|graphite|oxblood" flow="true|false">.
+   Colour, type and rule weights all come from the design system tokens in src/styles/ (see ./theme).
    Data is supplied via the `data` property (or window.ATLAS_DATA as a fallback). */
 
-import type { AtlasData, PaperTheme, Structure, Theme } from './types';
+import type { AtlasData, Structure, Theme } from './types';
 import { AtlasScene, MONO, edgeKey } from './scene';
 import type { Projection, SceneBlock, SceneEdge, SceneExternal } from './scene';
+import { PAPERS, readTheme, resolvePaper } from './theme';
 
-export { MONO };
+export { MONO, PAPERS, resolvePaper };
 
-export const THEMES: Record<PaperTheme, Theme> = {
-  tan:   { bg: '#cfc79c', paper: '#c8c093', top: '#ddd6b2', faceA: '#bdb488', faceB: '#cec696', ink: '#16130a', dim: 'rgba(22,19,10,.55)', faint: 'rgba(22,19,10,.16)' },
-  light: { bg: '#f1eee4', paper: '#eae6d8', top: '#fdfcf7', faceA: '#dcd7c6', faceB: '#e9e5d6', ink: '#233457', dim: 'rgba(35,52,87,.55)',  faint: 'rgba(35,52,87,.14)' },
-  dark:  { bg: '#191510', paper: '#14100c', top: '#2c251b', faceA: '#211b13', faceB: '#271f16', ink: '#e4d3a1', dim: 'rgba(228,211,161,.55)', faint: 'rgba(228,211,161,.16)' },
-};
+/* The design system's small button: 10px, tight padding — a step under --fs-label, which is the
+   default size (see components/actions/Button.jsx upstream). The chrome is built from the small one;
+   the right panel's buttons are the default. Nothing else in the app sizes type off the scale. */
+const FS_SM = '10px';
 
 const esc = (t: unknown) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
@@ -137,7 +138,7 @@ export class Atlas extends HTMLElement {
     if (n === 'paper') this.build();
     else if (n === 'flow') this.scene?.setFlow(this.flowOn());
   }
-  theme(): Theme { return THEMES[this.getAttribute('paper') as PaperTheme] || THEMES.tan; }
+  theme(): Theme { return readTheme(resolvePaper(this.getAttribute('paper'))); }
   flowOn() { return this.getAttribute('flow') !== 'false'; }
 
   /** The topbar. Split out of `build` so a long-running action — a scan, an analysis — can move its
@@ -145,15 +146,15 @@ export class Atlas extends HTMLElement {
   private paintBar() {
     const T = this.theme(), D = this.D, bar = this.barEl!;
     bar.innerHTML = '';
-    const cell = (k: string, v: string) => el('div', `padding:8px 14px;border-right:1.5px solid ${T.ink};display:flex;flex-direction:column;justify-content:space-between;flex:none`,
-      `<div style="font-size:9px;letter-spacing:.16em;color:${T.dim}">${k}</div><div style="font-size:14px;white-space:nowrap">${v}</div>`);
+    const cell = (k: string, v: string) => el('div', `padding:8px 14px;border-right:var(--border-w) solid ${T.ink};display:flex;flex-direction:column;justify-content:space-between;flex:none`,
+      `<div style="font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);color:${T.dim}">${k}</div><div style="font-size:var(--fs-stat);white-space:nowrap">${v}</div>`);
     const statRow = el('div', 'display:flex;align-items:stretch;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none');
     statRow.appendChild(cell('CODEBASE ATLAS', '<b>' + esc(D.product) + '</b>'));
     statRow.appendChild(cell('REPOSITORY', esc(D.repo)));
     D.stats.forEach(([k, v]) => statRow.appendChild(cell(k, esc(v))));
     bar.appendChild(statRow);
 
-    const BTN = `font-family:${MONO};font-size:10px;letter-spacing:.12em;background:none;border:1.5px solid ${T.ink};color:${T.ink};padding:7px 11px;cursor:pointer;align-self:center;white-space:nowrap;flex:none;height:30px;box-sizing:border-box`;
+    const BTN = `font-family:${MONO};font-size:${FS_SM};letter-spacing:var(--ls-label);background:none;border:var(--border-w) solid ${T.ink};color:${T.ink};padding:7px 11px;cursor:pointer;align-self:center;white-space:nowrap;flex:none;height:30px;box-sizing:border-box`;
 
     if (this.nav && this.nav.entries.length > 1) {
       const { entries, index, go } = this.nav;
@@ -169,7 +170,7 @@ export class Atlas extends HTMLElement {
     }
     if (this.openRepo) {
       const form = el('form', `display:flex;align-items:center;gap:0;margin:0 0 0 6px;flex:none;align-self:center`);
-      const inp = el('input', `font-family:${MONO};font-size:10px;letter-spacing:.06em;background:none;border:1.5px solid ${T.ink};border-right:none;color:${T.ink};padding:7px 9px;width:220px;outline:none;box-sizing:border-box;height:30px`);
+      const inp = el('input', `font-family:${MONO};font-size:${FS_SM};letter-spacing:.06em;background:none;border:var(--border-w) solid ${T.ink};border-right:none;color:${T.ink};padding:7px 9px;width:220px;outline:none;box-sizing:border-box;height:30px`);
       inp.placeholder = 'github.com/owner/repo'; inp.spellcheck = false; inp.autocomplete = 'off';
       inp.value = this.getAttribute('repo-query') || '';
       // Everything openable by typing is offered back as you type — no extra topbar width spent.
@@ -209,12 +210,13 @@ export class Atlas extends HTMLElement {
     setFB();
     fb.onclick = () => { this.setAttribute('flow', this.flowOn() ? 'false' : 'true'); setFB(); };
     bar.appendChild(fb);
-    // paper switch (app chrome; the prototype received `paper` from its host editor)
-    const PAPERS: PaperTheme[] = ['tan', 'light', 'dark'];
+    // paper switch (app chrome; the prototype received `paper` from its host editor). The list is the
+    // design system's — add a theme to tokens/colors.css and PAPERS and it joins the cycle here.
     const pb = el('button', `${BTN};margin:0 12px 0 0`);
-    const cur = (this.getAttribute('paper') as PaperTheme) || 'tan';
-    pb.textContent = 'PAPER · ' + (THEMES[cur] ? cur : 'tan').toUpperCase();
-    pb.onclick = () => { const i = PAPERS.indexOf(THEMES[cur] ? cur : 'tan'); this.setAttribute('paper', PAPERS[(i + 1) % PAPERS.length]); };
+    const cur = resolvePaper(this.getAttribute('paper'));
+    pb.textContent = 'PAPER · ' + cur.toUpperCase();
+    pb.title = `Paper ${PAPERS.indexOf(cur) + 1} of ${PAPERS.length} — ${PAPERS.join(', ')}`;
+    pb.onclick = () => this.setAttribute('paper', PAPERS[(PAPERS.indexOf(cur) + 1) % PAPERS.length]);
     bar.appendChild(pb);
   }
 
@@ -224,14 +226,14 @@ export class Atlas extends HTMLElement {
     this.style.cssText = `display:grid;grid-template-rows:auto 1fr;width:100%;height:100vh;min-height:640px;background:${T.bg};color:${T.ink};font-family:${MONO};overflow:hidden;box-sizing:border-box`;
     this.innerHTML = '';
     // ── topbar ──
-    this.barEl = el('div', `display:flex;align-items:stretch;height:60px;border-bottom:1.5px solid ${T.ink};min-width:0;overflow:hidden`);
+    this.barEl = el('div', `display:flex;align-items:stretch;height:60px;border-bottom:var(--border-w) solid ${T.ink};min-width:0;overflow:hidden`);
     this.paintBar();
     this.appendChild(this.barEl);
     // ── main grid ──
     const main = el('div', 'display:grid;grid-template-columns:232px minmax(0,1fr) 398px;min-height:0');
-    this.sideEl = el('div', `border-right:1.5px solid ${T.ink};overflow-y:auto;padding:10px 0 24px`);
+    this.sideEl = el('div', `border-right:var(--border-w) solid ${T.ink};overflow-y:auto;padding:10px 0 24px`);
     this.mapWrap = el('div', 'position:relative;min-width:0;overflow:hidden');
-    this.panelEl = el('div', `border-left:1.5px solid ${T.ink};overflow-y:auto;padding:20px 22px 40px;background:${T.bg}`);
+    this.panelEl = el('div', `border-left:var(--border-w) solid ${T.ink};overflow-y:auto;padding:20px 22px 40px;background:${T.bg}`);
     main.appendChild(this.sideEl); main.appendChild(this.mapWrap); main.appendChild(this.panelEl);
     this.appendChild(main);
     this.renderSidebar(); this.renderScene(); this.renderPanel();
@@ -243,12 +245,12 @@ export class Atlas extends HTMLElement {
     this.sideEl.innerHTML = '';
     this.rowEls = {};
     D.GROUPS.forEach(([gname, ids]) => {
-      this.sideEl.appendChild(el('div', `margin:14px 12px 5px;font-size:9px;letter-spacing:.18em;color:${T.bg};background:${T.ink};display:inline-block;padding:2px 7px`, esc(gname)));
+      this.sideEl.appendChild(el('div', `margin:14px 12px 5px;font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);color:${T.bg};background:${T.ink};display:inline-block;padding:2px 7px`, esc(gname)));
       this.sideEl.appendChild(el('div', ''));
       ids.forEach((id) => {
         const s = this.byId[id]; if (!s) return;
         const r = el('div', `display:flex;align-items:baseline;gap:8px;padding:4px 12px;cursor:pointer;font-size:11px;line-height:1.3`);
-        r.innerHTML = `<span style="flex:none;width:20px;font-size:9px;border:1px solid ${T.ink};text-align:center;padding:1px 0">${s.code}</span><span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.name)}</span><span style="flex:none;font-size:9px;color:${T.dim}">${esc(s.loc.split('·')[1] || s.loc)}</span>`;
+        r.innerHTML = `<span style="flex:none;width:20px;font-size:var(--fs-kicker);border:var(--border-w-hair) solid ${T.ink};text-align:center;padding:1px 0">${s.code}</span><span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.name)}</span><span style="flex:none;font-size:var(--fs-kicker);color:${T.dim}">${esc(s.loc.split('·')[1] || s.loc)}</span>`;
         r.onmouseenter = () => { if (this.sel !== id) r.style.background = T.faint; };
         r.onmouseleave = () => { if (this.sel !== id) r.style.background = ''; };
         r.onclick = () => { if (this.inside) this.comeOut(true); this.select(id); if (this.sel === id) this.scene?.focus(id); };
@@ -322,29 +324,29 @@ export class Atlas extends HTMLElement {
     if (this.projection !== 'flat') this.scene.setProjection(this.projection);
 
     // overlays
-    const cart = el('div', `position:absolute;left:14px;bottom:14px;border:1.5px solid ${T.ink};background:${T.bg};padding:9px 13px;font-size:9px;letter-spacing:.12em;line-height:1.9;pointer-events:none`);
+    const cart = el('div', `position:absolute;left:14px;bottom:14px;border:var(--border-w) solid ${T.ink};background:${T.bg};padding:9px 13px;font-size:var(--fs-kicker);letter-spacing:var(--ls-label);line-height:1.9;pointer-events:none`);
     cart.innerHTML = this.inside
       ? `<b style="font-size:11px">INSIDE ${this.byId[this.inside].code} — ${esc(this.byId[this.inside].name.toUpperCase())}</b><br><span style="color:${T.dim}">${esc(this.byId[this.inside].loc)}</span>`
       : `<b style="font-size:11px">${esc(D.product)} — CODEBASE ATLAS</b><br><span style="color:${T.dim}">${esc(D.repo)} · BLOCK HEIGHT = CODE SIZE · SLABS = STORAGE &amp; RECORDS</span>`;
     this.mapWrap.appendChild(cart);
-    const hint = el('div', `position:absolute;right:14px;bottom:14px;font-size:9px;letter-spacing:.12em;color:${T.dim};pointer-events:none;text-align:right`,
+    const hint = el('div', `position:absolute;right:14px;bottom:14px;font-size:var(--fs-kicker);letter-spacing:var(--ls-label);color:${T.dim};pointer-events:none;text-align:right`,
       this.inside ? 'ESC TO COME BACK OUT' : 'DRAG TO PAN · RIGHT-DRAG TO TURN · SCROLL TO ZOOM · CLICK · DOUBLE-CLICK TO GO INSIDE');
     this.mapWrap.appendChild(hint);
     if (this.inside) {
-      const back = el('button', `position:absolute;left:14px;top:14px;font-family:${MONO};font-size:10px;letter-spacing:.12em;background:${T.ink};color:${T.bg};border:none;padding:8px 12px;cursor:pointer`, '← BACK TO THE MAP');
+      const back = el('button', `position:absolute;left:14px;top:14px;font-family:${MONO};font-size:${FS_SM};letter-spacing:var(--ls-label);background:${T.ink};color:${T.bg};border:none;padding:8px 12px;cursor:pointer`, '← BACK TO THE MAP');
       back.onclick = () => this.comeOut();
       this.mapWrap.appendChild(back);
     }
     this.mapWrap.appendChild(this.navControl(T));
-    this.tipEl = el('div', `position:absolute;display:none;max-width:250px;border:1.5px solid ${T.ink};background:${T.bg};color:${T.ink};padding:7px 10px;font-size:10.5px;line-height:1.5;pointer-events:none;z-index:5`);
+    this.tipEl = el('div', `position:absolute;display:none;max-width:250px;border:var(--border-w) solid ${T.ink};background:${T.bg};color:${T.ink};padding:7px 10px;font-size:var(--fs-label);line-height:1.5;pointer-events:none;z-index:5`);
     this.mapWrap.appendChild(this.tipEl);
     this.paintSel();
   }
 
   /** The map's own controls, stacked top-right: fit, reset, zoom, compass, projection, help. */
   private navControl(T: Theme) {
-    const box = el('div', `position:absolute;right:14px;top:14px;display:flex;flex-direction:column;border:1.5px solid ${T.ink};background:${T.bg};z-index:4`);
-    const BTN = `font-family:${MONO};font-size:10px;letter-spacing:.1em;background:none;border:none;border-bottom:1.5px solid ${T.ink};color:${T.ink};padding:7px 10px;cursor:pointer;text-align:left;white-space:nowrap;min-width:78px;line-height:1;box-sizing:border-box`;
+    const box = el('div', `position:absolute;right:14px;top:14px;display:flex;flex-direction:column;border:var(--border-w) solid ${T.ink};background:${T.bg};z-index:4`);
+    const BTN = `font-family:${MONO};font-size:${FS_SM};letter-spacing:var(--ls-label);background:none;border:none;border-bottom:var(--border-w) solid ${T.ink};color:${T.ink};padding:7px 10px;cursor:pointer;text-align:left;white-space:nowrap;min-width:78px;line-height:1;box-sizing:border-box`;
     const btn = (label: string, title: string, act: () => void, css = '') => {
       const b = el('button', BTN + css, label);
       b.title = title; b.setAttribute('aria-label', title);
@@ -354,14 +356,14 @@ export class Atlas extends HTMLElement {
     };
     btn('⌖ FIT', 'Frame the whole atlas (F)', () => this.scene?.fit());
     btn('⟲ RESET', 'Back to the isometric view (R)', () => this.scene?.reset());
-    const zoomRow = el('div', `display:flex;border-bottom:1.5px solid ${T.ink}`);
+    const zoomRow = el('div', `display:flex;border-bottom:var(--border-w) solid ${T.ink}`);
     const zb = (label: string, title: string, k: number, extra: string) => {
       const b = el('button', `${BTN};border-bottom:none;flex:1;min-width:0;text-align:center;${extra}`, label);
       b.title = title; b.setAttribute('aria-label', title);
       b.onclick = () => this.scene?.zoomBy(k);
       zoomRow.appendChild(b);
     };
-    zb('+', 'Zoom in (+)', 1.35, `border-right:1.5px solid ${T.ink}`);
+    zb('+', 'Zoom in (+)', 1.35, `border-right:var(--border-w) solid ${T.ink}`);
     zb('−', 'Zoom out (−)', 1 / 1.35, '');
     box.appendChild(zoomRow);
     // compass: the needle points to the map's north — the top of the default isometric view
@@ -381,15 +383,15 @@ export class Atlas extends HTMLElement {
     });
     // help
     const wrap = el('div', 'position:relative');
-    const tipBox = el('div', `position:absolute;right:100%;bottom:0;margin-right:8px;width:236px;display:none;border:1.5px solid ${T.ink};background:${T.bg};color:${T.ink};padding:10px 12px;font-size:10px;line-height:1.8;letter-spacing:.06em;text-align:left;white-space:normal`);
+    const tipBox = el('div', `position:absolute;right:100%;bottom:0;margin-right:8px;width:236px;display:none;border:var(--border-w) solid ${T.ink};background:${T.bg};color:${T.ink};padding:10px 12px;font-size:${FS_SM};line-height:1.8;letter-spacing:.06em;text-align:left;white-space:normal`);
     const row = (k: string, v: string) => `<div style="display:flex;gap:10px"><span style="flex:none;width:96px;color:${T.dim}">${k}</span><span>${v}</span></div>`;
     tipBox.innerHTML = [
-      `<div style="font-size:9px;letter-spacing:.18em;margin-bottom:6px">MOUSE</div>`,
+      `<div style="font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);margin-bottom:6px">MOUSE</div>`,
       row('DRAG', 'pan'), row('RIGHT-DRAG', 'rotate &amp; tilt'), row('CTRL + DRAG', 'rotate &amp; tilt'), row('WHEEL', 'zoom at the cursor'),
       row('CLICK', 'select a block, or an import to read it'), row('DOUBLE-CLICK', 'go inside · a line frames both ends'),
-      `<div style="font-size:9px;letter-spacing:.18em;margin:8px 0 6px">TOUCH</div>`,
+      `<div style="font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);margin:8px 0 6px">TOUCH</div>`,
       row('ONE FINGER', 'pan'), row('TWO FINGERS', 'pinch to zoom, twist to turn'),
-      `<div style="font-size:9px;letter-spacing:.18em;margin:8px 0 6px">KEYBOARD (MAP FOCUSED)</div>`,
+      `<div style="font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);margin:8px 0 6px">KEYBOARD (MAP FOCUSED)</div>`,
       row('ARROWS', 'pan · shift for more'), row('+ / −', 'zoom'), row('F', 'fit'), row('R', 'reset view'), row('N', 'north'), row('ESC', 'back out'),
     ].join('');
     const help = el('button', `${BTN};border-bottom:none;text-align:center;width:100%`, '?');
@@ -471,25 +473,25 @@ export class Atlas extends HTMLElement {
 
   // ───────────────────────── right panel ─────────────────────────
   rich(t: string) { const T = this.theme(); return esc(t).replace(/\[\[(.+?)\]\]/g, `<span style="background:${T.ink};color:${T.bg};padding:0 4px">$1</span>`); }
-  hRule(label: string) { const T = this.theme(); return `<div style="display:flex;align-items:center;gap:9px;margin:20px 0 9px"><span style="font-size:9px;letter-spacing:.18em;white-space:nowrap">${label}</span><span style="flex:1;height:1.5px;background:${T.ink}"></span></div>`; }
+  hRule(label: string) { const T = this.theme(); return `<div style="display:flex;align-items:center;gap:9px;margin:20px 0 9px"><span style="font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);white-space:nowrap">${label}</span><span style="flex:1;height:var(--border-w);background:${T.ink}"></span></div>`; }
   renderPanel() {
     const T = this.theme(), D = this.D, Pn = this.panelEl;
-    const btn = `font-family:${MONO};font-size:10.5px;letter-spacing:.12em;border:1.5px solid ${T.ink};background:none;color:${T.ink};padding:9px 13px;cursor:pointer`;
+    const btn = `font-family:${MONO};font-size:var(--fs-label);letter-spacing:var(--ls-label);border:var(--border-w) solid ${T.ink};background:none;color:${T.ink};padding:9px 13px;cursor:pointer`;
     if (this.traceI >= 0) {
       const [id, sentence] = D.TRACE[this.traceI];
       const s = this.byId[id];
       Pn.innerHTML = `
-        <div style="font-size:9px;letter-spacing:.18em;color:${T.dim}">TRACE — ${esc(D.traceTitle || 'ONE SLIDER DRAG')}, END TO END</div>
-        <div style="font-size:30px;font-weight:700;margin:10px 0 2px">${String(this.traceI + 1).padStart(2, '0')}<span style="color:${T.dim};font-size:15px"> / ${D.TRACE.length}</span></div>
-        <div style="font-size:12px;letter-spacing:.1em;margin-bottom:14px">${s.code} · ${esc(s.name.toUpperCase())}</div>
-        <div style="font-size:13px;line-height:1.75;border-left:3px solid ${T.ink};padding-left:13px">${this.rich(sentence)}</div>
+        <div style="font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);color:${T.dim}">TRACE — ${esc(D.traceTitle || 'ONE SLIDER DRAG')}, END TO END</div>
+        <div style="font-size:var(--fs-display);font-weight:700;margin:10px 0 2px">${String(this.traceI + 1).padStart(2, '0')}<span style="color:${T.dim};font-size:var(--fs-stat)"> / ${D.TRACE.length}</span></div>
+        <div style="font-size:var(--fs-body);letter-spacing:var(--ls-label);margin-bottom:14px">${s.code} · ${esc(s.name.toUpperCase())}</div>
+        <div style="font-size:var(--fs-body);line-height:var(--leading-body);border-left:var(--border-w-heavy) solid ${T.ink};padding-left:13px">${this.rich(sentence)}</div>
         <div style="display:flex;gap:8px;margin-top:22px">
           <button id="tPrev" style="${btn}${this.traceI === 0 ? ';opacity:.35' : ''}">‹ PREV</button>
           <button id="tNext" style="${btn};background:${T.ink};color:${T.bg}${this.traceI === D.TRACE.length - 1 ? ';opacity:.35' : ''}">NEXT ›</button>
           <span style="flex:1"></span>
           <button id="tEnd" style="${btn}">✕ END</button>
         </div>
-        <div style="margin-top:14px;font-size:9px;letter-spacing:.12em;color:${T.dim}">← → ARROW KEYS STEP · ESC ENDS</div>`;
+        <div style="margin-top:14px;font-size:var(--fs-kicker);letter-spacing:var(--ls-label);color:${T.dim}">← → ARROW KEYS STEP · ESC ENDS</div>`;
       (Pn.querySelector('#tPrev') as HTMLButtonElement).onclick = () => this.stepTrace(-1);
       (Pn.querySelector('#tNext') as HTMLButtonElement).onclick = () => this.stepTrace(1);
       (Pn.querySelector('#tEnd') as HTMLButtonElement).onclick = () => this.endTrace();
@@ -500,20 +502,20 @@ export class Atlas extends HTMLElement {
       // an import: where it comes from, where it goes, and what travels along it
       const { f, t } = edge, e = edge.e;
       const sf = this.byId[f.id], st = this.byId[t.id];
-      const endBtn = (s: Structure) => `<button data-id="${s.id}" style="${btn};display:flex;align-items:baseline;gap:10px;width:100%;text-align:left"><span style="font-size:15px;font-weight:700;border:1.5px solid ${T.ink};padding:0 6px">${s.code}</span><span style="flex:1;font-size:12px;font-weight:700">${esc(s.name)}</span><span style="font-size:9px;color:${T.dim};white-space:nowrap">${esc(s.loc.split('·')[1] || s.loc)}</span></button>`;
+      const endBtn = (s: Structure) => `<button data-id="${s.id}" style="${btn};display:flex;align-items:baseline;gap:10px;width:100%;text-align:left"><span style="font-size:var(--fs-stat);font-weight:700;border:var(--border-w) solid ${T.ink};padding:0 6px">${s.code}</span><span style="flex:1;font-size:var(--fs-body);font-weight:700">${esc(s.name)}</span><span style="font-size:var(--fs-kicker);color:${T.dim};white-space:nowrap">${esc(s.loc.split('·')[1] || s.loc)}</span></button>`;
       Pn.innerHTML = `
-        <button id="pBack" style="border:none;background:none;color:${T.dim};font-family:${MONO};font-size:10px;letter-spacing:.14em;cursor:pointer;padding:0">← OVERVIEW</button>
-        <div style="font-size:9px;letter-spacing:.18em;color:${T.dim};margin:14px 0 6px">${e.dashed ? 'LOOSE LINK' : 'IMPORT'}${e.flow ? ' · CARRIES THE FLOW' : ''}</div>
-        <div style="font-size:19px;font-weight:700;line-height:1.25">${esc(f.name)} <span style="color:${T.dim}">→</span> ${esc(t.name)}</div>
+        <button id="pBack" style="border:none;background:none;color:${T.dim};font-family:${MONO};font-size:${FS_SM};letter-spacing:var(--ls-label);cursor:pointer;padding:0">← OVERVIEW</button>
+        <div style="font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);color:${T.dim};margin:14px 0 6px">${e.dashed ? 'LOOSE LINK' : 'IMPORT'}${e.flow ? ' · CARRIES THE FLOW' : ''}</div>
+        <div style="font-size:var(--fs-title);font-weight:700;line-height:var(--leading-title)">${esc(f.name)} <span style="color:${T.dim}">→</span> ${esc(t.name)}</div>
         ${this.hRule('WHAT TRAVELS')}
-        <div style="font-size:13px;line-height:1.75;border-left:3px solid ${T.ink};padding-left:13px">${e.pay ? this.rich(e.pay) : `<span style="color:${T.dim}">The scan saw the import but nothing names what it carries.</span>`}</div>
+        <div style="font-size:var(--fs-body);line-height:var(--leading-body);border-left:var(--border-w-heavy) solid ${T.ink};padding-left:13px">${e.pay ? this.rich(e.pay) : `<span style="color:${T.dim}">The scan saw the import but nothing names what it carries.</span>`}</div>
         ${this.hRule('FROM')}
         <div id="pEnds">${sf ? endBtn(sf) : ''}</div>
         ${this.hRule('TO')}
         <div id="pEnds2">${st ? endBtn(st) : ''}</div>
-        ${e.dashed ? `<div style="margin-top:14px;font-size:10.5px;line-height:1.6;color:${T.dim}">Dashed means the link is optional, lazy, or a type-only import: nothing runs through it at start-up.</div>` : ''}
+        ${e.dashed ? `<div style="margin-top:14px;font-size:var(--fs-label);line-height:1.6;color:${T.dim}">Dashed means the link is optional, lazy, or a type-only import: nothing runs through it at start-up.</div>` : ''}
         <button id="pFocus" style="${btn};margin-top:22px;width:100%">⌖ FRAME BOTH ENDS</button>
-        <div style="margin-top:14px;font-size:9px;letter-spacing:.12em;color:${T.dim}">DOUBLE-CLICK THE LINE FRAMES IT · ESC LETS GO</div>`;
+        <div style="margin-top:14px;font-size:var(--fs-kicker);letter-spacing:var(--ls-label);color:${T.dim}">DOUBLE-CLICK THE LINE FRAMES IT · ESC LETS GO</div>`;
       (Pn.querySelector('#pBack') as HTMLButtonElement).onclick = () => this.clearSelection();
       (Pn.querySelector('#pFocus') as HTMLButtonElement).onclick = () => this.scene?.focusEdge(this.selEdge!);
       Pn.querySelectorAll<HTMLButtonElement>('#pEnds button, #pEnds2 button').forEach((b) => { b.onclick = () => { this.select(b.dataset.id!); this.scene?.focus(b.dataset.id!); }; });
@@ -525,17 +527,17 @@ export class Atlas extends HTMLElement {
     if (cur) {
       const talks = (cur.talks || []).map((tid) => this.byId[tid]).filter(Boolean);
       Pn.innerHTML = `
-        <button id="pBack" style="border:none;background:none;color:${T.dim};font-family:${MONO};font-size:10px;letter-spacing:.14em;cursor:pointer;padding:0">← ${this.inside ? esc(this.byId[this.inside].name.toUpperCase()) : 'OVERVIEW'}</button>
+        <button id="pBack" style="border:none;background:none;color:${T.dim};font-family:${MONO};font-size:${FS_SM};letter-spacing:var(--ls-label);cursor:pointer;padding:0">← ${this.inside ? esc(this.byId[this.inside].name.toUpperCase()) : 'OVERVIEW'}</button>
         <div style="display:flex;align-items:baseline;gap:12px;margin:14px 0 2px">
-          <span style="font-size:26px;font-weight:700;border:2px solid ${T.ink};padding:1px 9px">${cur.code}</span>
-          <span style="font-size:19px;font-weight:700;line-height:1.2">${esc(cur.name)}</span>
+          <span style="font-size:26px;font-weight:700;border:var(--border-w-heavy) solid ${T.ink};padding:1px 9px">${cur.code}</span>
+          <span style="font-size:var(--fs-title);font-weight:700;line-height:var(--leading-title)">${esc(cur.name)}</span>
         </div>
-        <div style="font-size:10px;letter-spacing:.14em;color:${T.dim};margin-bottom:4px">${cur.group ? esc(cur.group) + ' · ' : ''}${esc(cur.loc || '')}</div>
+        <div style="font-size:var(--fs-label);letter-spacing:var(--ls-label);color:${T.dim};margin-bottom:4px">${cur.group ? esc(cur.group) + ' · ' : ''}${esc(cur.loc || '')}</div>
         ${this.hRule('WHAT IT DOES')}
-        <div style="font-size:12.5px;line-height:1.75">${this.rich(cur.what)}</div>
-        ${cur.how ? this.hRule("HOW IT'S BUILT") + `<div style="font-size:12.5px;line-height:1.75">${this.rich(cur.how)}</div>` : ''}
-        ${cur.src ? this.hRule('SOURCE') + `<div style="font-size:10.5px;line-height:2;color:${T.dim}">${cur.src.map(esc).join('<br>')}</div>` : ''}
-        ${talks.length ? this.hRule('TALKS TO') + `<div id="pTalks" style="display:flex;flex-wrap:wrap;gap:6px">${talks.map((t) => `<button data-id="${t.id}" style="${btn};padding:5px 9px;font-size:10px">${t.code} ${esc(t.name.toUpperCase())}</button>`).join('')}</div>` : ''}
+        <div style="font-size:var(--fs-body);line-height:var(--leading-body)">${this.rich(cur.what)}</div>
+        ${cur.how ? this.hRule("HOW IT'S BUILT") + `<div style="font-size:var(--fs-body);line-height:var(--leading-body)">${this.rich(cur.how)}</div>` : ''}
+        ${cur.src ? this.hRule('SOURCE') + `<div style="font-size:var(--fs-label);line-height:2;color:${T.dim}">${cur.src.map(esc).join('<br>')}</div>` : ''}
+        ${talks.length ? this.hRule('TALKS TO') + `<div id="pTalks" style="display:flex;flex-wrap:wrap;gap:6px">${talks.map((t) => `<button data-id="${t.id}" style="${btn};padding:5px 9px;font-size:${FS_SM}">${t.code} ${esc(t.name.toUpperCase())}</button>`).join('')}</div>` : ''}
         <div style="display:flex;gap:8px;margin-top:22px">
           <button id="pFocus" style="${btn};flex:1">⌖ FLY TO</button>
           ${cur.children ? `<button id="pIn" style="${btn};background:${T.ink};color:${T.bg};flex:2">▣ GO INSIDE — ${cur.children.length} PARTS</button>` : ''}
@@ -548,13 +550,13 @@ export class Atlas extends HTMLElement {
     }
     // overview
     Pn.innerHTML = `
-      <div style="font-size:9px;letter-spacing:.2em;color:${T.dim}">${esc(D.overviewKicker)} — ${esc(D.overviewSub.toUpperCase())}</div>
-      <div style="font-size:21px;font-weight:700;line-height:1.3;margin:10px 0 4px;text-wrap:balance">${esc(D.overviewTitle)}</div>
+      <div style="font-size:var(--fs-kicker);letter-spacing:var(--ls-kicker);color:${T.dim}">${esc(D.overviewKicker)} — ${esc(D.overviewSub.toUpperCase())}</div>
+      <div style="font-size:var(--fs-title);font-weight:700;line-height:var(--leading-title);margin:10px 0 4px;text-wrap:balance">${esc(D.overviewTitle)}</div>
       ${this.hRule('WHAT IT DOES')}
-      ${D.OVERVIEW_WHAT.map((p) => `<p style="font-size:12.5px;line-height:1.75;margin:0 0 11px">${this.rich(p)}</p>`).join('')}
+      ${D.OVERVIEW_WHAT.map((p) => `<p style="font-size:var(--fs-body);line-height:var(--leading-body);margin:0 0 11px">${this.rich(p)}</p>`).join('')}
       ${this.hRule("HOW IT'S BUILT")}
-      ${D.OVERVIEW_HOW.map((p) => `<p style="font-size:12.5px;line-height:1.75;margin:0 0 11px">${this.rich(p)}</p>`).join('')}
-      <div style="border:1.5px solid ${T.ink};padding:11px 13px;font-size:11px;line-height:1.7;margin-top:18px">${this.rich(D.HOW_TO_READ)}</div>
+      ${D.OVERVIEW_HOW.map((p) => `<p style="font-size:var(--fs-body);line-height:var(--leading-body);margin:0 0 11px">${this.rich(p)}</p>`).join('')}
+      <div style="border:var(--border-w) solid ${T.ink};padding:11px 13px;font-size:var(--fs-body);line-height:var(--leading-body);margin-top:18px">${this.rich(D.HOW_TO_READ)}</div>
       <button id="pTrace" style="${btn};background:${T.ink};color:${T.bg};margin-top:18px;width:100%">▶ TRACE ${esc(D.traceTitle || 'ONE SLIDER DRAG')} — ${D.TRACE.length} STEPS</button>`;
     (Pn.querySelector('#pTrace') as HTMLButtonElement).onclick = () => this.startTrace();
   }
