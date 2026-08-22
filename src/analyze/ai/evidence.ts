@@ -47,6 +47,19 @@ export interface ComposeEvidence {
   externals: string;
 }
 
+/** The composed atlas, which is what a ride is ordered over: groups and the trace as well as the
+    blocks and edges the compose pass sees. Reads no files. */
+export interface RideEvidence {
+  name: string;
+  ref: string;
+  product: string;
+  facts: string;
+  groups: string;
+  blocks: string;
+  edges: string;
+  trace: string;
+}
+
 /** A folder tree with per-folder counts. Folders past `maxPerDir` files are summarised, not listed,
     so a 4,000-file repository still fits in a prompt. */
 function treeDigest(files: RepoFile[], maxPerDir = 14): string {
@@ -156,6 +169,18 @@ export function blockEvidence(source: RepoSource, data: AtlasData): BlockEvidenc
       links: [...out, ...inn].join('\n') || '(no in-repo imports resolved in either direction)',
     };
   });
+}
+
+export function rideEvidence(source: RepoSource, data: AtlasData): RideEvidence {
+  const c = composeEvidence(source, data);
+  const drawn = new Set(data.STRUCTURES.map((s) => s.id));
+  const nameOf = new Map(data.STRUCTURES.map((s) => [s.id, s.name]));
+  return {
+    name: c.name, ref: c.ref, product: c.product, facts: c.facts, blocks: c.blocks, edges: c.edges,
+    groups: data.GROUPS.filter(([, ids]) => ids.some((id) => drawn.has(id)))
+      .map(([g, ids]) => `${g}: ${ids.filter((id) => drawn.has(id)).join(', ')}`).join('\n') || '(none)',
+    trace: data.TRACE.map(([id, sentence]) => `${id}  [${nameOf.get(id) ?? id}]  ${sentence.replace(/\n/g, ' ')}`).join('\n') || '(none)',
+  };
 }
 
 export function composeEvidence(source: RepoSource, data: AtlasData): ComposeEvidence {

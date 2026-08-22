@@ -18,7 +18,8 @@ bun run preview
 | --- | --- |
 | `src/atlas/engine.ts` | The element — topbar, sidebar, right panel, tooltip, trace, inside-view — ported from `prototype/atlas-engine.js`. Registers `<codebase-atlas paper="tan\|blueprint\|dark-luxe\|graphite\|oxblood" flow="true\|false">`. |
 | `src/atlas/scene.ts` | The map itself: a Three.js scene with `MapControls`, an orthographic camera by default (`FLAT`) or perspective (`DEEP`), elevated import arcs, contact shadows, DOM labels that stay upright and thin out as you zoom out, and the animated FIT / RESET / focus moves. |
-| `src/atlas/types.ts` | The `AtlasData` contract (structures, edges, externals, trace, groups, stats). |
+| `src/atlas/ride.ts` | The ride — a narrated, auto-playing flight over the map, with its letterbox overlay, hold timer and the browser's own voice. The engine hands it callbacks; it owns the camera through `scene.flyTo`. |
+| `src/atlas/types.ts` | The `AtlasData` contract (structures, edges, externals, trace, groups, stats, ride). |
 | `src/atlas/theme.ts` | The design system's colour tokens, resolved out of the cascade into the concrete pair the canvas needs. Owns the paper list and the old paper names. |
 | `src/styles/` | The design system's token layer, mirrored into the app — colour, type, spacing, patterns. `src/styles/README.md` says how it is wired and how to re-sync it. |
 | `src/data/arc-worlds.ts` | Demo dataset: `andysolomon/arc-worlds` (Little Worlds). |
@@ -43,8 +44,9 @@ bun run preview
 - **Analysis** — `✦ ANALYZE` reads the code with a model and rewrites the map (see [AI analysis](#ai-analysis)). Greyed out for a pre-built atlas: its prose is already written.
 - **History** — `◀` `▶` step through the repositories opened this session. Stepping back is instant and costs nothing: the built map, including any analysis, is kept with the entry. Repos openable by name are remembered across reloads and suggested in the field.
 - **Paper** — `?paper=tan|blueprint|dark-luxe|graphite|oxblood` in the URL, or the `PAPER · …` button in the topbar, which cycles them. The URL is kept in step. `light` and `dark` were the names the first two shipped under; those links still land, and leave with the current name on them.
-- **Deep links** — `#inside=<id>` opens a structure; `#trace=<n>` opens trace step *n* (0-based); `#edge=<from>,<to>` selects an import.
-- **Keyboard** — `ESC` exits inside-view / ends trace / deselects; `←` `→` step a trace. With the map focused: arrows pan (`⇧` for more), `+` `−` zoom, `F` fits, `R` resets the isometric view, `N` turns back to north.
+- **The ride** — `▶ TAKE THE RIDE` in the overview card (or `▶ RIDE` in the topbar) flies a narrated route over the map: the chrome recedes into letterbox bands, the camera rises between distant stops and settles in on arrival, and a caption band reads each stop — aloud too, if `VOICE` is on. Touch the map at any moment and the ride hands you the controls and waits; `▶ RESUME` re-flies the current stop from wherever you left the camera. It works with no model, no key and no network: a ride is built from what the scan computed, and `✦ ANALYZE` replaces it with one a model scripted. `?repo=owner/repo#ride` is the link to send someone — scan this repository, then fly over it.
+- **Deep links** — `#inside=<id>` opens a structure; `#trace=<n>` opens trace step *n* (0-based); `#edge=<from>,<to>` selects an import; `#ride=<n>` starts the ride at stop *n* — pausing anywhere leaves that link in the address bar.
+- **Keyboard** — `ESC` exits inside-view / ends trace / deselects; `←` `→` step a trace. During a ride, `SPACE` pauses and resumes, `←` `→` step the stops, `ESC` exits. With the map focused: arrows pan (`⇧` for more), `+` `−` zoom, `F` fits, `R` resets the isometric view, `N` turns back to north.
 - **Map** — drag to pan, right-drag or `ctrl`-drag to turn and tilt, wheel to zoom toward the cursor; one finger pans, two fingers pinch and twist. Click selects — a block, or an import arc, which opens the relationship in the panel: what travels along it and both ends as buttons, with the rest of the map receding. Double-click flies to a block and goes inside it; on an arc it frames both ends. The control stack top-right: `⌖ FIT` frames everything, `⟲ RESET` restores the original isometric composition, `+` `−` zoom, the compass turns back to north, `FLAT`/`DEEP` switches between orthographic and perspective without moving the view, and `?` lists every gesture. The camera never goes under the paper, never tilts past useful angles, and cannot pan or zoom the atlas out of sight. `prefers-reduced-motion` turns the flights into cuts and switches off inertia.
 
 ## The design system
@@ -183,7 +185,8 @@ bun scripts/eval-atlas.ts public/atlases/arc-worlds.json --verbose
 #### Models and cost
 
 One atlas of a 179-file repository measured at **49,979 input / 14,299 output tokens** — six calls plus
-retries. (`--dry-run` estimates ~28k input; the rest is retries, so treat the estimate as a floor.) Any
+retries, before the ride pass was added; the ride is one more call on a 6–10 KB pack, about $0.003 on
+the default model, and it reads no files. (`--dry-run` estimates ~28k input; the rest is retries, so treat the estimate as a floor.) Any
 model id the [AI Gateway](https://ai-gateway.vercel.sh/v1/models) serves works. Prices are per million
 tokens; cost is for that one atlas:
 
@@ -213,10 +216,13 @@ citations before trusting a headline number.
 
 #### What stops it making things up
 
-Three passes — decide the blocks, describe each one, write the front matter. Everything a model returns
-is checked against the scan before it can touch the map:
+Four passes — decide the blocks, describe each one, write the front matter, script the ride. Everything
+a model returns is checked against the scan before it can touch the map:
 
 - a path the scan never saw is dropped;
+- a ride stop on a block, group or import that is not drawn is dropped, and the stops around it read on
+  in order; a ride left with fewer than four stops, or circling one block, is discarded whole and the
+  templated ride stands — surviving stops are never spliced into it;
 - a block id that was never drawn, or an edge that is not on the map, is dropped;
 - a headline number whose citation cannot be found in the evidence is dropped (see below);
 - a headline number that restates what the scan already prints is dropped;
@@ -268,7 +274,7 @@ re-roll: cached passes cost nothing, so only what failed is asked again. A stron
 
 #### In the browser
 
-Press `✦ ANALYZE` in the topbar. It runs the same three passes over whatever repository is on screen
+Press `✦ ANALYZE` in the topbar. It runs the same four passes over whatever repository is on screen
 — a GitHub scan or a local folder — showing which pass is running, and turning into `✦ RE-ANALYZE`
 when the map has been rewritten. Any pass that falls back says so on the status line rather than
 quietly presenting half a map as a whole one. A scan also triggers one analysis by itself, so the
@@ -349,8 +355,8 @@ vercel firewall diff           # read what changed
 vercel firewall publish --yes  # you publish; nothing is live until you do
 ```
 
-Sixty requests in five minutes is about ten atlases from one address — one atlas is roughly six
-requests (a partition, up to four narrate batches, a compose). It starts in **log** mode so it counts
+Sixty requests in five minutes is about eight atlases from one address — one atlas is roughly seven
+requests (a partition, up to four narrate batches, a compose, a ride). It starts in **log** mode so it counts
 without blocking. Watch the traffic, then enforce:
 
 ```sh
@@ -377,6 +383,10 @@ templated map.
   uses each most. Frameworks are read from `package.json` / `requirements.txt` / `pyproject.toml`.
 - **Trace** starts at the entry point (`main.*`, `index.*`, `app.*`, …) and follows the heaviest
   unvisited import edge, up to 12 steps. **Inside** a block are its nine largest files.
+- **Ride** opens on the whole map, stops at each group's row, lands on the two largest blocks and the
+  busiest link, follows the trace, and closes wide — at most 16 stops, padding dropped first. Each
+  landmark stop reads the block's first sentence, so an analysed map's ride inherits the model's prose
+  even when the ride pass itself fell back.
 
 | Path | What |
 | --- | --- |

@@ -4,15 +4,19 @@
     and bound what is real, so one verbose answer cannot overrun a card that has room for three
     sentences. Anything dropped is reported, never silently accepted. */
 
-import type { AtlasData } from '../../atlas/types.js';
+import type { AtlasData, RideBeat } from '../../atlas/types.js';
+import { sameSubject } from '../build.js';
 import type { Narration, Partition, RepoFile, UnitSpec } from '../types.js';
-import type { ComposeOut, NarrateOut, PartitionOut } from './schemas.js';
+import type { ComposeOut, NarrateOut, PartitionOut, RideOut } from './schemas.js';
 
 /** Room on the drawn card, in characters. Measured against the hand-written arc-worlds dataset. */
 const CAP = {
   what: 460, how: 360, child: 160, trace: 300, overview: 720,
   title: 110, sub: 80, kicker: 32, statKey: 20, statValue: 34, payload: 46, name: 34,
+  say: 240, rideTitle: 32,
 };
+/** A ride's length: past sixteen stops a viewer stops watching, under four it is not a ride. */
+const MAX_BEATS = 16, MIN_BEATS = 4;
 
 /** Trim on a word boundary — a card that ends mid-word reads as a bug. */
 function clamp(s: string, max: number): string {
@@ -259,6 +263,50 @@ export function validateCompose(out: ComposeOut, data: AtlasData, report: Report
     ...(trace.length >= 2 ? { trace } : {}),
     ...(Object.keys(edgeLabels).length ? { edgeLabels } : {}),
   };
+}
+
+/** The ride. Every beat has to frame something the map has drawn; one that does not is dropped and
+    the beats around it read on in order. Between rides it is all-or-nothing: surviving model beats
+    are never spliced into the templated ride, because a line that says "having seen the API layer"
+    about a stop that was cut is exactly what this file exists to prevent. */
+export function validateRide(out: RideOut, data: AtlasData, report: Report): { rideTitle: string; ride: RideBeat[] } | null {
+  const ids = new Set(data.STRUCTURES.map((s) => s.id));
+  const edgeKeys = new Set(data.EDGES.map((e) => `${e.f}->${e.t}`));
+  const groups = new Map(data.GROUPS.filter(([, g]) => g.some((id) => ids.has(id))).map(([g]) => [g.trim().toLowerCase(), g]));
+
+  if (out.beats.length > MAX_BEATS) report.notes.push(`ride had ${out.beats.length} beats; kept the first ${MAX_BEATS}`);
+  const beats: RideBeat[] = [];
+  for (const b of out.beats.slice(0, MAX_BEATS)) {
+    const say = clamp(b.say ?? '', CAP.say);
+    if (!say) { report.dropped.push('a ride beat said nothing'); continue; }
+    switch (b.look) {
+      case 'all': beats.push({ all: 1, say }); break;
+      case 'block': {
+        const id = (b.id ?? '').trim();
+        if (!ids.has(id)) { report.dropped.push(`ride beat on unknown block "${id}"`); continue; }
+        beats.push({ block: id, say }); break;
+      }
+      case 'edge': {
+        const f = (b.from ?? '').trim(), t = (b.to ?? '').trim();
+        if (!edgeKeys.has(`${f}->${t}`)) { report.dropped.push(`ride beat on an edge that is not drawn: ${f}->${t}`); continue; }
+        beats.push({ edge: [f, t], say }); break;
+      }
+      case 'group': {
+        const g = groups.get((b.group ?? '').trim().toLowerCase());
+        if (!g) { report.dropped.push(`ride beat on a group that is not drawn: "${b.group ?? ''}"`); continue; }
+        beats.push({ group: g, say }); break;
+      }
+      default: report.dropped.push(`ride beat with an unknown look "${String((b as { look?: unknown }).look)}"`);
+    }
+  }
+  // flying to where you already are reads as a stall — and it is what a dropped middle beat leaves behind
+  const ride = beats.filter((b, i) => i === 0 || !sameSubject(b, beats[i - 1]));
+
+  const distinct = new Set<string>();
+  for (const b of ride) { if (b.block) distinct.add(b.block); if (b.edge) { distinct.add(b.edge[0]); distinct.add(b.edge[1]); } }
+  if (ride.length < MIN_BEATS) { report.notes.push(`ride: only ${ride.length} beats survived; the templated ride stands`); return null; }
+  if (distinct.size < 2) { report.notes.push('ride: circles fewer than two blocks; the templated ride stands'); return null; }
+  return { rideTitle: clamp(out.rideTitle, CAP.rideTitle).toUpperCase(), ride };
 }
 
 /** The stat evidence pointers, for `--explain`. Stats are the one output nothing can check. */

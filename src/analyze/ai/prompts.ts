@@ -103,3 +103,28 @@ returning fewer stats, and an uncited number is exactly the kind that turns out 
 
 Mark key phrases in the overview paragraphs with [[double brackets]] — a thesis about the system, not decoration.
 The overview should read top to bottom the way the map does.`;
+
+export const RIDE = `Script the ride: a narrated flight over the finished map that someone who has never seen this
+repository can watch without touching anything. The camera flies from stop to stop; at each stop one line is
+shown as a caption and READ ALOUD by the browser's voice.
+
+Each beat says what the camera frames and what is said while it is framed. The camera can only go where the
+map has something drawn, so a beat may name only:
+- look "all" — the whole map. Open with one of these and close with one of these.
+- look "block" with an id from the BLOCKS list.
+- look "edge" with a from-id and to-id that appear together, as a pair, in the EDGES list.
+- look "group" with a group name, exactly as written in the GROUPS list.
+A beat naming anything else is dropped, and the beats around it will have to read in order without it.
+
+Order the stops the way the system runs — the way a request or a user action travels — not the way the
+folders are listed. Eight to fourteen stops. Use the trace below for the spine of the route and the groups
+for the wide shots between; do not simply read the trace back. Carry the thread between stops: a line may
+refer to what was just seen, so the ride reads as one explanation rather than a list of cards.
+
+Each "say" is one or two sentences that will be spoken. So: present tense, plain words, nothing that only
+works on the page. No brackets, no file paths in the middle of a sentence unless they are said naturally, no
+"as you can see", no "click here", no instructions to the reader. Name real things: the function, the
+format, the rule the code enforces, the constraint that shaped it. Every claim must be supported by the
+evidence below; every number must be in it.
+
+The title is what the ride is, in caps: "ONE PASS OVER THE SYSTEM", "FROM A KEYPRESS TO THE DATABASE".`;

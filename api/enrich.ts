@@ -9,10 +9,10 @@
     storage, and it survives the function being cold. */
 
 import { createHash } from 'node:crypto';
-import { buildComposePrompt, buildNarratePrompt, buildPartitionPrompt } from '../src/analyze/ai/index.js';
-import { COMPOSE, NARRATE, PARTITION, SYSTEM } from '../src/analyze/ai/prompts.js';
+import { buildComposePrompt, buildNarratePrompt, buildPartitionPrompt, buildRidePrompt } from '../src/analyze/ai/index.js';
+import { COMPOSE, NARRATE, PARTITION, RIDE, SYSTEM } from '../src/analyze/ai/prompts.js';
 import { credentialStatus, runPass } from '../src/analyze/ai/provider.js';
-import { ComposeOut, NarrateOut, PartitionOut } from '../src/analyze/ai/schemas.js';
+import { ComposeOut, NarrateOut, PartitionOut, RideOut } from '../src/analyze/ai/schemas.js';
 
 /** The client may not choose the model — that is how a public endpoint stays affordable. It is told
     which one ran, though: a card written by a cheap model should be read as one. */
@@ -52,7 +52,7 @@ const modelFor = (pass: string, fallback: boolean): string => {
 /** What the instructions currently say, in eight characters. The browser mixes this into its cache
     keys: it builds the evidence but never sees the prompt, so without it, editing prompts.ts would
     keep serving answers written to the old ones. */
-const PROMPTS_VERSION = createHash('sha256').update([SYSTEM, PARTITION, NARRATE, COMPOSE].join('\u0000')).digest('hex').slice(0, 8);
+const PROMPTS_VERSION = createHash('sha256').update([SYSTEM, PARTITION, NARRATE, COMPOSE, RIDE].join('\u0000')).digest('hex').slice(0, 8);
 
 const MAX_BODY = 768 * 1024;
 const MAX_BLOCKS_PER_CALL = 8;
@@ -89,6 +89,14 @@ function cleanCompose(e: Record<string, unknown>) {
     name: str(e.name, 200), ref: str(e.ref, 100), product: str(e.product, 120),
     facts: str(e.facts, 4_000), blocks: str(e.blocks, 40_000),
     edges: str(e.edges, 20_000), externals: str(e.externals, 4_000),
+  };
+}
+
+function cleanRide(e: Record<string, unknown>) {
+  return {
+    name: str(e.name, 200), ref: str(e.ref, 100), product: str(e.product, 120),
+    facts: str(e.facts, 4_000), groups: str(e.groups, 2_000), blocks: str(e.blocks, 40_000),
+    edges: str(e.edges, 20_000), trace: str(e.trace, 8_000),
   };
 }
 
@@ -135,6 +143,10 @@ async function handler(req: Request): Promise<Response> {
       }
       case 'compose': {
         const r = await runPass({ model: wanted, system: SYSTEM, schema: ComposeOut, prompt: buildComposePrompt(cleanCompose(evidence)) });
+        return json(r.value ? 200 : 502, r.value ? { ok: true, value: r.value, model: wanted } : { ok: false, error: r.error });
+      }
+      case 'ride': {
+        const r = await runPass({ model: wanted, system: SYSTEM, schema: RideOut, prompt: buildRidePrompt(cleanRide(evidence)) });
         return json(r.value ? 200 : 502, r.value ? { ok: true, value: r.value, model: wanted } : { ok: false, error: r.error });
       }
       default:
