@@ -15,7 +15,13 @@
                         paused                paused
 
    One rule makes it robust: a generation counter. Every entry into a beat bumps it, and every async
-   callback — a landing, a cancellation, the hold timer — opens by checking it is still current. */
+   callback — a landing, a cancellation, the hold timer, a speech event — opens by checking it is
+   still current.
+
+   Voice is the browser's own speech synthesis: free, local, offline, no dependency. It is hostile in
+   the wild — speak() before a gesture is a silent no-op on Safari, onend sometimes never fires,
+   Chrome stops after fifteen seconds — so the hold timer is always authoritative: speech may only
+   extend a hold, never shorten it, and never past a cap. */
 
 import type { RideBeat, Theme } from './types';
 import type { AtlasScene, FlightEnd, FlightHandle, FlightTarget, Projection } from './scene';
@@ -39,6 +45,15 @@ export interface RideHooks {
 
 /** The small button: the nav control's recipe, so the ride's chrome is the map's chrome. */
 const FS_SM = '10px';
+
+const CAN_SPEAK = typeof speechSynthesis !== 'undefined' && typeof SpeechSynthesisUtterance === 'function';
+/** The most a line may run on past its hold before the ride moves on without it. */
+const GRACE = 6000;
+/** speak() with no onstart and nothing speaking after this long is a synth that is not going to. */
+const PROBE_MS = 900;
+/** Chrome stops synthesis after about fifteen seconds; a pause/resume every ten keeps it talking. */
+const KEEP_ALIVE_MS = 10_000;
+const plain = (s: string) => s.replace(/\[\[(.+?)\]\]/g, '$1');
 
 /** How long a caption stays up, from how long it takes to read at about 180 words a minute, plus a
     moment to settle. The hold timer is always authoritative. */
@@ -72,6 +87,18 @@ export class Ride {
   private holdTimer = 0;
   private holdLeft = 0;
   private holdStart = 0;
+
+  // ── voice ──
+  private voice = false;
+  /** The synth took a line and said nothing. Once is enough: stop waiting on it for the session. */
+  private voiceBroken = false;
+  private utter: SpeechSynthesisUtterance | null = null;
+  private speaking = false;
+  private waitingOnVoice = false;
+  private watchdog = 0;
+  private probe = 0;
+  private keepAlive = 0;
+  private voiceBtn: HTMLButtonElement | null = null;
 
   private root: HTMLDivElement;
   private counter!: HTMLDivElement;
@@ -110,6 +137,7 @@ export class Ride {
     this.hooks.onBeat(beat, i, n);
     this.paint();
     this.fly(g);
+    this.speak(g, beat.say);
   }
   step(d: 1 | -1) {
     if (this.phase === 'ended') return;
@@ -123,6 +151,7 @@ export class Ride {
     if (this.phase === 'flying') this.scene.pauseFlight();
     else { this.clearHold(); this.holdLeft = Math.max(0, this.holdLeft - (performance.now() - this.holdStart)); }
     this.phase = 'paused';
+    this.pauseSpeech();
     this.paint();
   }
   resume() {
@@ -132,6 +161,7 @@ export class Ride {
     else if (this.flight?.state === 'flying' && !this.taken) { this.phase = 'flying'; this.scene.resumeFlight(); }
     else { this.phase = 'flying'; this.fly(g); }   // the user moved the camera: re-fly the stop from here
     this.taken = false;
+    this.resumeSpeech();
     this.paint();
   }
   toggle() { if (this.phase === 'paused') this.resume(); else this.pause(); }
@@ -143,7 +173,7 @@ export class Ride {
     this.taken = true;
     if (was === 'holding') { this.clearHold(); this.holdLeft = Math.max(0, this.holdLeft - (performance.now() - this.holdStart)); }
     if (was !== 'paused') { this.pausedFrom = was; this.phase = 'paused'; }
-    this.onTaken();
+    this.pauseSpeech();
     this.paint();
   }
 
@@ -155,10 +185,74 @@ export class Ride {
     this.gen++;
     this.clearHold();
     this.phase = 'ended';
+    this.stopSpeech();
     if (reason === 'exited') this.flight?.cancel();
     this.flight = null;
     this.root.remove();
     this.hooks.onEnd(reason);
+  }
+
+  // ───────────────────────── voice ─────────────────────────
+  /** Switching the voice on speaks the current line right here, inside the click: that is the gesture
+      Safari needs to unlock the engine, and it is instant feedback. Every later speak() fires from a
+      timer and works because the engine is unlocked. */
+  setVoice(on: boolean) {
+    if (!CAN_SPEAK || this.voiceBroken) on = false;
+    this.voice = on;
+    if (on && this.index >= 0 && this.phase !== 'ended') this.speak(this.gen, this.beats[this.index].say);
+    else this.stopSpeech();
+    this.paintVoice();
+  }
+  private speak(g: number, say: string) {
+    this.stopSpeech();
+    if (!this.voice || this.voiceBroken || !CAN_SPEAK) return;
+    const u = new SpeechSynthesisUtterance(plain(say));
+    let started = false;
+    u.onstart = () => { if (g !== this.gen) return; started = true; this.speaking = true; };
+    u.onend = u.onerror = () => {
+      if (g !== this.gen) return;
+      this.speaking = false;
+      this.clearKeepAlive();
+      if (this.waitingOnVoice) { this.waitingOnVoice = false; this.clearWatchdog(); this.next(); }
+    };
+    this.utter = u;
+    this.speaking = true;
+    speechSynthesis.speak(u);
+    if (this.phase === 'paused') speechSynthesis.pause();
+    this.probe = window.setTimeout(() => {
+      this.probe = 0;
+      if (g !== this.gen) return;
+      if (!started && !speechSynthesis.speaking) {
+        // a silent no-op — iOS before a gesture, a browser with no voices: say so rather than wait
+        this.voiceBroken = true; this.voice = false; this.speaking = false;
+        this.stopSpeech();
+        this.paintVoice();
+      }
+    }, PROBE_MS);
+    this.armKeepAlive();
+  }
+  private armKeepAlive() {
+    this.clearKeepAlive();
+    this.keepAlive = window.setInterval(() => { if (this.speaking && this.phase !== 'paused') { speechSynthesis.pause(); speechSynthesis.resume(); } }, KEEP_ALIVE_MS);
+  }
+  private clearKeepAlive() { if (this.keepAlive) { window.clearInterval(this.keepAlive); this.keepAlive = 0; } }
+  private clearWatchdog() { if (this.watchdog) { window.clearTimeout(this.watchdog); this.watchdog = 0; } }
+  /** Null the outgoing line's handlers, then cancel: some engines fire onend on cancel, some do not,
+      and some do so after the ride has moved on. */
+  private stopSpeech() {
+    if (this.utter) { this.utter.onstart = this.utter.onend = this.utter.onerror = null; this.utter = null; }
+    if (CAN_SPEAK && (this.speaking || speechSynthesis.speaking || speechSynthesis.pending)) speechSynthesis.cancel();
+    this.speaking = false; this.waitingOnVoice = false;
+    this.clearWatchdog(); this.clearKeepAlive();
+    if (this.probe) { window.clearTimeout(this.probe); this.probe = 0; }
+  }
+  private pauseSpeech() { if (CAN_SPEAK && this.speaking) speechSynthesis.pause(); }
+  private resumeSpeech() { if (CAN_SPEAK && this.speaking) speechSynthesis.resume(); }
+  private paintVoice() {
+    const b = this.voiceBtn; if (!b) return;
+    b.textContent = this.voice ? 'VOICE ON' : 'VOICE OFF';
+    b.title = this.voiceBroken ? 'Speech synthesis did not answer in this browser' : 'Read each stop aloud, with the browser\'s own voice';
+    b.style.opacity = this.voiceBroken ? '.35' : '';
   }
 
   private fly(g: number, opts: { ms?: number; arc?: number } = {}) {
@@ -183,9 +277,15 @@ export class Ride {
     this.holdTimer = window.setTimeout(() => { if (g !== this.gen) return; this.holdTimer = 0; this.onHoldOver(g); }, ms);
   }
   private clearHold() { if (this.holdTimer) { window.clearTimeout(this.holdTimer); this.holdTimer = 0; } }
-  /** The caption has been up long enough. */
-  protected onHoldOver(_g: number) { this.next(); }
-  protected next() { this.go(this.index + 1); }
+  /** The caption has been up long enough. A line still being read may hold the stop a little longer —
+      never past GRACE, whatever the synth does. */
+  private onHoldOver(g: number) {
+    if (this.voice && this.speaking) {
+      this.waitingOnVoice = true;
+      this.watchdog = window.setTimeout(() => { if (g !== this.gen) return; this.watchdog = 0; this.waitingOnVoice = false; this.next(); }, GRACE);
+    } else this.next();
+  }
+  private next() { this.go(this.index + 1); }
 
   private cancelled(g: number, why: FlightEnd) {
     switch (why) {
@@ -204,9 +304,6 @@ export class Ride {
         return;   // the ride did it itself
     }
   }
-  /** The user reached in. Speech, when there is any, stops here. */
-  protected onTaken() { /* nothing without a voice */ }
-
   // ───────────────────────── overlay ─────────────────────────
   private buildOverlay(): HTMLDivElement {
     const T = this.T;
@@ -246,7 +343,8 @@ export class Ride {
       const p = this.hooks.toggleProjection();
       this.projBtn.textContent = p === 'flat' ? '▱ FLAT' : '◇ DEEP';
     });
-    this.extraControls(ctl, btn);
+    // a control that can never work is chrome for nothing
+    if (CAN_SPEAK) { this.voiceBtn = btn('VOICE OFF', '', () => this.setVoice(!this.voice)); this.paintVoice(); }
     this.note = el('div', `flex:1;text-align:right;font-size:var(--fs-kicker);letter-spacing:var(--ls-label);color:${T.dim};white-space:nowrap`);
     ctl.appendChild(this.note);
     btn('✕ EXIT', 'Leave the ride (esc)', () => this.stop('exited'));
@@ -254,10 +352,7 @@ export class Ride {
     root.appendChild(bottom);
     return root;
   }
-  /** Room for a control the base ride does not have. */
-  protected extraControls(_ctl: HTMLDivElement, _btn: (label: string, title: string, act: () => void) => HTMLButtonElement) { /* none */ }
-
-  protected paint() {
+  private paint() {
     const T = this.T, n = this.beats.length, i = this.index;
     if (i < 0) return;
     this.counter.innerHTML = `${String(i + 1).padStart(2, '0')}<span style="color:${T.dim};font-size:var(--fs-label)"> / ${String(n).padStart(2, '0')}</span>`;
