@@ -1,5 +1,7 @@
 /** Inputs to the analyzer. A source is just a flat list of files; where they came from is irrelevant. */
 
+import type { RideBeat } from '../atlas/types.js';
+
 export interface RepoFile {
   /** Path relative to the repo root, forward slashes, no leading "./". */
   path: string;
@@ -76,4 +78,7 @@ export interface Narration {
   /** Edge payload labels, keyed `"from→to"`. */
   edgeLabels?: Record<string, string>;
   units?: UnitNarration[];
+  /** The ride, in order. Every beat names something the map has drawn. */
+  ride?: RideBeat[];
+  rideTitle?: string;
 }

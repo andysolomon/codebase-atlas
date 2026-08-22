@@ -61,6 +61,26 @@ export interface External {
 }
 
 export type TraceStep = [structureId: string, sentence: string];
+
+/** One stop on the ride: what the camera frames, and the line read while it is framed. Exactly one
+    of `all`, `block`, `edge`, `group` is set — the whole vocabulary, because it is exactly what the
+    map has something drawn for. */
+export interface RideBeat {
+  /** Frame the whole atlas: the opening and closing shots. */
+  all?: 1;
+  /** A `STRUCTURES` id. */
+  block?: string;
+  /** An `EDGES` pair — a tuple, never a key string, because two key formats exist (see scene.ts). */
+  edge?: [from: string, to: string];
+  /** A `GROUPS` name. */
+  group?: string;
+  /** The line: captioned, and spoken. [[marks]] allowed; stripped before speech. */
+  say: string;
+  /** Heading for this beat, radians from the default isometric heading. A turn around the subject. */
+  turn?: number;
+  /** Hold in ms. Derived from `say` when absent. */
+  hold?: number;
+}
 export type Group = [name: string, ids: string[]];
 export type Stat = [key: string, value: string];
 
@@ -81,6 +101,11 @@ export interface AtlasData {
   EDGES: Edge[];
   EXTERNALS?: External[];
   TRACE: TraceStep[];
+  /** A narrated flight over the map. Built from the scan when absent from the source; never empty on
+      a freshly built atlas. */
+  RIDE?: RideBeat[];
+  /** Short label for the ride, e.g. 'ONE PASS OVER THE SYSTEM'. */
+  rideTitle?: string;
   /** Present when the prose was written by a model rather than templated from the scan. */
   provenance?: Provenance;
 }

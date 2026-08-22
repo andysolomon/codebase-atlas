@@ -1,7 +1,7 @@
 /* Turns a flat file listing (plus whatever content was loaded) into an AtlasData dataset.
    Every number in the output is a fact from the scan; the prose is templated from those facts. */
 
-import type { AtlasData, ChildPart, Edge, External, Group, Structure, TraceStep } from '../atlas/types.js';
+import type { AtlasData, ChildPart, Edge, External, Group, RideBeat, Structure, TraceStep } from '../atlas/types.js';
 import { isOwnPackage } from './aliases.js';
 import { extOf, isCode, isIgnoredPath, isText, langOf } from './ignore.js';
 import { extractImports, packageName } from './imports.js';
@@ -444,9 +444,19 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
   const product = (source.name.split('/').pop() || source.name).replace(/[-_]+/g, ' ').toUpperCase();
   const subj = `a ${langs[0] ? langs[0][0] : 'mixed'}${frameworks[0] ? ' / ' + frameworks.slice(0, 2).join(' + ') : ''} codebase`;
 
+  // ── ride: open wide, one stop per group, the landmarks, the busiest link, the trace, close wide ──
+  const RIDE = buildRide({
+    groups: GROUPS.map(([g, ids]) => ({ name: g, ids, bytes: ids.reduce((a, id) => a + (unitById.get(id)?.bytes ?? 0), 0) })),
+    byId: new Map(STRUCTURES.map((s) => [s.id, s])),
+    landmarks: big.slice(0, 2).map((u) => u.id),
+    topEdge: topEdge ? { f: topEdge.f.id, t: topEdge.t.id, fn: topEdge.f.name, tn: topEdge.t.name, n: topEdge.n, ex: topEdge.ex } : null,
+    TRACE, kb, list,
+  });
+
   const data: AtlasData = {
     repo: `${source.name} · ${source.ref}`, product,
     traceTitle: 'ONE IMPORT CHAIN',
+    rideTitle: 'ONE PASS OVER THE SYSTEM',
     stats: [
       ['FILES', String(files.length)],
       ['TEXT', kb(totalBytes)],
@@ -471,11 +481,55 @@ export function buildAtlas(source: RepoSource, opts: BuildOptions = {}): AtlasDa
       ...(source.note ? [source.note] : []),
     ],
     HOW_TO_READ: 'Hover anything for a plain description; click it for the full card. [[Go inside]] a block to see its largest files. TRACE follows the heaviest import chain out from the entry point.',
-    GROUPS, STRUCTURES, EDGES, EXTERNALS, TRACE,
+    GROUPS, STRUCTURES, EDGES, EXTERNALS, TRACE, RIDE,
   };
   if (uncovered) data.OVERVIEW_HOW.push(`${uncovered} scanned file${uncovered === 1 ? '' : 's'} matched no block and are not counted on the map.`);
   return opts.narration ? applyNarration(data, opts.narration) : data;
 }
+
+/** The most stops a ride has. Past this a viewer stops watching; the model's ride is capped to the same. */
+const MAX_RIDE = 16;
+
+/** A route over the map built from nothing but the scan. The opening, the trace and the close are the
+    story; the group stops are the padding, so they are the first to go when the cap bites. The
+    landmark stops read each block's first sentence — templated on a plain scan, and on an --ai build
+    whose narrate pass ran, the model's own line, for free. */
+function buildRide(a: {
+  groups: { name: string; ids: string[]; bytes: number }[];
+  byId: Map<string, Structure>;
+  landmarks: string[];
+  topEdge: { f: string; t: string; fn: string; tn: string; n: number; ex: string } | null;
+  TRACE: TraceStep[];
+  kb: (b: number) => string;
+  list: (xs: string[]) => string;
+}): RideBeat[] {
+  const first = (id: string) => (a.byId.get(id)?.what ?? '').split('. ')[0].replace(/\.?$/, '.');
+  const blocks = a.byId.size, steps = a.TRACE.length;
+  const open: RideBeat = { all: 1, say: `${blocks} block${blocks === 1 ? '' : 's'} in ${a.groups.length} group${a.groups.length === 1 ? '' : 's'}. Block height is the amount of code inside; the arcs are imports.` };
+  const groups: RideBeat[] = a.groups.map((g) => {
+    const names = g.ids.slice(0, 3).map((id) => a.byId.get(id)?.name ?? id);
+    return { group: g.name, say: `${g.name}: ${g.ids.length} block${g.ids.length === 1 ? '' : 's'}, ${a.kb(g.bytes)}${names.length ? ` — ${a.list(names)}${g.ids.length > 3 ? ' and more' : ''}` : ''}.` };
+  });
+  const landmarks: RideBeat[] = a.landmarks.filter((id) => a.byId.has(id)).map((id) => ({ block: id, say: first(id) }));
+  const edge: RideBeat[] = a.topEdge ? [{ edge: [a.topEdge.f, a.topEdge.t], say: `The busiest link: ${a.topEdge.fn} reaches into ${a.topEdge.tn} — ${a.topEdge.n} import${a.topEdge.n === 1 ? '' : 's'}, for example ${a.topEdge.ex}.` }] : [];
+  const trace: RideBeat[] = a.TRACE.map(([id, sentence]) => ({ block: id, say: sentence }));
+  const close: RideBeat = { all: 1, say: steps ? `That is the map: ${blocks} blocks, and one import chain of ${steps} stop${steps === 1 ? '' : 's'} through it. Drag, scroll and click to look around.` : `That is the map. Drag, scroll and click to look around.` };
+
+  // drop padding first — group stops, then landmarks, then the edge, then the trace's tail
+  const over = () => 2 + groups.length + landmarks.length + edge.length + trace.length - MAX_RIDE;
+  while (over() > 0 && groups.length) groups.pop();
+  while (over() > 0 && landmarks.length) landmarks.pop();
+  while (over() > 0 && edge.length) edge.pop();
+  while (over() > 0 && trace.length) trace.pop();
+
+  const beats = [open, ...groups, ...landmarks, ...edge, ...trace, close];
+  return beats.filter((b, i) => i === 0 || !sameSubject(b, beats[i - 1]));
+}
+
+/** Two beats that frame the same thing; flying to where you already are reads as a stall. */
+export const sameSubject = (a: RideBeat, b: RideBeat) =>
+  (a.all && b.all) || (!!a.block && a.block === b.block) || (!!a.group && a.group === b.group)
+  || (!!a.edge && !!b.edge && a.edge[0] === b.edge[0] && a.edge[1] === b.edge[1]);
 
 /** Lay written prose over a finished atlas. Anything the writer left out keeps its templated text,
     and nothing here can move a block, change a number, or invent an id. */
@@ -519,5 +573,7 @@ function applyNarration(d: AtlasData, n: Narration): AtlasData {
     OVERVIEW_HOW: n.OVERVIEW_HOW?.length ? n.OVERVIEW_HOW : d.OVERVIEW_HOW,
     HOW_TO_READ: n.HOW_TO_READ?.trim() || d.HOW_TO_READ,
     traceTitle: n.traceTitle?.trim() || d.traceTitle,
+    RIDE: n.ride?.length ? n.ride : d.RIDE,
+    rideTitle: n.rideTitle?.trim() || d.rideTitle,
   };
 }

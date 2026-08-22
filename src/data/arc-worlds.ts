@@ -3,7 +3,7 @@ import type { AtlasData } from '../atlas/types';
 // Codebase Atlas DATA — andysolomon/arc-worlds@main (Little Worlds)
 // All file counts and KB figures come from the repo tree scan (2026-08-19).
 export const ARC_WORLDS: AtlasData = {
-  repo: 'arc-worlds · main', product: 'LITTLE WORLDS', traceTitle: 'ONE SLIDER DRAG',
+  repo: 'arc-worlds · main', product: 'LITTLE WORLDS', traceTitle: 'ONE SLIDER DRAG', rideTitle: 'ONE WORLD, PANEL TO POSTGRES',
   stats: [
     ['TABS', '4'],
     ['WORLD TYPES', '8'],
@@ -215,5 +215,20 @@ export const ARC_WORLDS: AtlasData = {
     ['fn','api/worlds re-sanitizes server-side, mints an 8-char slug and an edit token returned only to you.'],
     ['db','Drizzle inserts the row into Neon Postgres. The params column IS the world; no image is stored.'],
     ['ap','A friend opens /w/:slug. The params come back and the engine regenerates the world in full 3D — as it exists against today\u2019s renderer, not a stale picture.'],
+  ],
+  // The ride: a narrated flight over the map, written by hand — the held-out quality target for the
+  // model-written one. Every stop names something drawn above; the camera cannot go anywhere else.
+  RIDE: [
+    {all:1, say:'Little Worlds is a browser app for sculpting planets. Seen from above, it reads top to bottom the way a request does: panels, engine, worker, domain, server.'},
+    {group:'THE APP', say:'Four React panels across the top. Sculpt edits a world, Systems arranges worlds around a star, Scan reads the atmosphere, and the gallery lists what has been saved.'},
+    {block:'pa', say:'Everything the panels do ends up here. [[A world is just its params]]: a seed and about twenty numbers, clamped into range by one sanitize function that runs in the browser and again on the server.'},
+    {edge:['pa','ve'], say:'Clean params cross into the engine. This is the busiest link on the map, and the only way a panel can change what is drawn.'},
+    {block:'ve', turn:0.55, say:'The viewport owns its canvas and animation loop. React creates it once and feeds it params; it diffs old against new, so a colour change never rebuilds the terrain.'},
+    {edge:['ve','wk'], say:'The heavy math leaves the main thread. The worker bridge posts a render job and keeps only the latest one per slot.'},
+    {group:'TERRAIN V2', say:'Inside the worker, a canonical terrain graph is grown, elevation and climate are computed over it, and the buffers are baked. The model never leaves the worker; only finished artifacts come back.'},
+    {block:'su', say:'One function colours the world, shared by the sculptor and the orbit view, so a seed always looks like itself.'},
+    {group:'THE SERVER', turn:-0.5, say:'The whole backend is five small Vercel Functions over Postgres, about twelve kilobytes of TypeScript. Saving a world re-sanitizes the params and inserts a row; the params column is the world, and no image is stored.'},
+    {group:'QUALITY', say:'Unit, end-to-end and performance tests run on every pull request, and a benchmark rejects anything more than ten percent slower than its base.'},
+    {all:1, say:'That is Little Worlds: a panel edits params, the engine draws them, the worker bakes them, and a shared link regenerates the world from under a kilobyte of JSON. Press trace to follow one slider drag end to end.'},
   ],
 };
