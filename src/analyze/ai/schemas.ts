@@ -53,3 +53,19 @@ export const ComposeOut = z.object({
   })),
 });
 export type ComposeOut = z.infer<typeof ComposeOut>;
+
+/** Flat, with a discriminant field and optional siblings, not a discriminated union: a union inside an
+    array is exactly what the weaker structured-output paths mangle. */
+export const RideOut = z.object({
+  rideTitle: z.string().describe('Caps label for the ride, e.g. ONE PASS OVER THE SYSTEM.'),
+  beats: z.array(z.object({
+    look: z.enum(['all', 'block', 'edge', 'group'])
+      .describe('What the camera frames: the whole map, one block, one import, or one group.'),
+    id: z.string().optional().describe('The block id from the list, when look is "block".'),
+    from: z.string().optional().describe('The edge\'s from-id, when look is "edge".'),
+    to: z.string().optional().describe('The edge\'s to-id, when look is "edge".'),
+    group: z.string().optional().describe('The group name in caps, when look is "group".'),
+    say: z.string().describe('One or two sentences, spoken aloud. Present tense. No instructions to the reader.'),
+  })).describe('The ride in order: open wide, move through the system the way it runs, close.'),
+});
+export type RideOut = z.infer<typeof RideOut>;

@@ -1,5 +1,5 @@
-/** Three passes over a scanned repository: decide what the blocks are, describe each one, then write
-    the front matter. Server-side only.
+/** Four passes over a scanned repository: decide what the blocks are, describe each one, write the
+    front matter, then script the ride over the finished map. Server-side only.
 
     The scan stays the authority on every number. If a pass fails, is rejected, or credentials are
     missing, that part of the atlas keeps the prose `buildAtlas` templated for it — so an enriched
@@ -8,13 +8,13 @@
 import type { AtlasData } from '../../atlas/types.js';
 import { buildAtlas } from '../build.js';
 import type { Narration, Partition, RepoSource } from '../types.js';
-import { blockEvidence, composeEvidence, estimateTokens, repoEvidence,
-  type BlockEvidence, type ComposeEvidence, type RepoEvidence } from './evidence.js';
+import { blockEvidence, composeEvidence, estimateTokens, repoEvidence, rideEvidence,
+  type BlockEvidence, type ComposeEvidence, type RepoEvidence, type RideEvidence } from './evidence.js';
 import { readCache, writeCache } from './cache.js';
-import { COMPOSE, NARRATE, PARTITION, SYSTEM } from './prompts.js';
+import { COMPOSE, NARRATE, PARTITION, RIDE, SYSTEM } from './prompts.js';
 import { addUsage, DEFAULT_MODEL, noUsage, runPass, type Usage } from './provider.js';
-import { ComposeOut, NarrateOut, PartitionOut } from './schemas.js';
-import { statEvidence, validateCompose, validateNarrate, validatePartition, type Report } from './validate.js';
+import { ComposeOut, NarrateOut, PartitionOut, RideOut } from './schemas.js';
+import { statEvidence, validateCompose, validateNarrate, validatePartition, validateRide, type Report } from './validate.js';
 
 export interface EnrichOptions {
   /** Model for every pass unless overridden. */
@@ -85,9 +85,22 @@ export function buildComposePrompt(e: ComposeEvidence): string {
   ].join('\n');
 }
 
+export function buildRidePrompt(e: RideEvidence): string {
+  return [
+    RIDE,
+    section('REPOSITORY', `${e.name} @ ${e.ref} - ${e.product}`),
+    section('MEASURED FACTS FROM THE SCAN', e.facts),
+    section('GROUPS (use these exact names)', e.groups),
+    section('BLOCKS (use these exact ids)', e.blocks),
+    section('EDGES (use these exact from->to pairs)', e.edges),
+    section('THE TRACE, AS WRITTEN', e.trace),
+  ].join('\n');
+}
+
 const partitionPrompt = (source: RepoSource) => buildPartitionPrompt(repoEvidence(source));
 const narratePrompt = buildNarratePrompt;
 const composePrompt = (source: RepoSource, data: AtlasData) => buildComposePrompt(composeEvidence(source, data));
+const ridePrompt = (source: RepoSource, data: AtlasData) => buildRidePrompt(rideEvidence(source, data));
 
 /** What an enrichment would cost, without spending anything. */
 export function planEnrichment(source: RepoSource, opts: EnrichOptions = {}): { label: string; tokens: number }[] {
@@ -102,6 +115,7 @@ export function planEnrichment(source: RepoSource, opts: EnrichOptions = {}): { 
     { label: 'partition', tokens: estimateTokens(partitionPrompt(source)) },
     ...batches,
     { label: 'compose', tokens: estimateTokens(composePrompt(source, base)) },
+    { label: 'ride', tokens: estimateTokens(ridePrompt(source, base)) },
   ];
 }
 
@@ -143,7 +157,7 @@ export async function enrichAtlas(source: RepoSource, opts: EnrichOptions = {}):
   }
 
   // pass 1 - what are the blocks
-  say('pass 1/3 - deciding what the blocks are');
+  say('pass 1/4 - deciding what the blocks are');
   const base = buildAtlas(source, { maxStructures: opts.maxStructures });
   const p1 = await cached<PartitionOut>('partition', partitionModel, partitionPrompt(source), PartitionOut);
 
@@ -163,7 +177,7 @@ export async function enrichAtlas(source: RepoSource, opts: EnrichOptions = {}):
   say(`  ${data.STRUCTURES.length} blocks in ${new Set(data.STRUCTURES.map((s) => s.group)).size} groups`);
 
   // pass 2 - describe each block
-  say('pass 2/3 - describing each block');
+  say('pass 2/4 - describing each block');
   const blocks = blockEvidence(source, data);
   const size = opts.batchSize ?? 6;
   const batches: ReturnType<typeof blockEvidence>[] = [];
@@ -196,7 +210,7 @@ export async function enrichAtlas(source: RepoSource, opts: EnrichOptions = {}):
   }
 
   // pass 3 - the overview, the headline numbers, the journey
-  say('pass 3/3 - writing the overview and the trace');
+  say('pass 3/4 - writing the overview and the trace');
   const p3 = await cached<ComposeOut>('compose', model, composePrompt(source, data), ComposeOut);
   let narration: Narration = { units, ...(product ? { product } : {}) };
   let evidence: string[] = [];
@@ -207,9 +221,21 @@ export async function enrichAtlas(source: RepoSource, opts: EnrichOptions = {}):
     fallbacks.push(`compose: ${p3.error ?? 'no result'}`);
   }
 
+  // pass 4 - the ride, over the composed map: its beats quote the final trace, which compose may have replaced
+  say('pass 4/4 - scripting the ride');
+  const composed = buildAtlas(source, { partition, narration, maxStructures: opts.maxStructures });
+  const p4 = await cached<RideOut>('ride', model, ridePrompt(source, composed), RideOut);
+  if (p4.value) {
+    const v = validateRide(p4.value, composed, report);
+    if (v) narration = { ...narration, ride: v.ride, rideTitle: v.rideTitle };
+    else fallbacks.push('ride: nothing survived validation');
+  } else {
+    fallbacks.push(`ride: ${p4.error ?? 'no result'}`);
+  }
+
   const final = buildAtlas(source, { partition, narration, maxStructures: opts.maxStructures });
   final.provenance = {
-    models: { partition: partitionModel, narrate: model, compose: model },
+    models: { partition: partitionModel, narrate: model, compose: model, ride: model },
     generatedAt: new Date().toISOString(),
     ...(fallbacks.length ? { fallbacks } : {}),
     ...(usage.input || usage.output ? { usage: { input: usage.input, output: usage.output } } : {}),

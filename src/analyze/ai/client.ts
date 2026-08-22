@@ -5,15 +5,15 @@
     a model over a pack — it never sees the repository, and this file never imports `ai` or `zod`, so
     the bundle stays dependency-free.
 
-    Three small round trips rather than one large one: the second pass cannot be built until the first
-    has changed what the blocks are. */
+    Small round trips rather than one large one: the second pass cannot be built until the first has
+    changed what the blocks are, and the ride is scripted over the map the third has finished. */
 
 import type { AtlasData } from '../../atlas/types.js';
 import { buildAtlas } from '../build.js';
 import type { Narration, Partition, RepoSource } from '../types.js';
-import { blockEvidence, composeEvidence, repoEvidence } from './evidence.js';
-import type { ComposeOut, NarrateOut, PartitionOut } from './schemas.js';
-import { statEvidence, validateCompose, validateNarrate, validatePartition, type Report } from './validate.js';
+import { blockEvidence, composeEvidence, repoEvidence, rideEvidence } from './evidence.js';
+import type { ComposeOut, NarrateOut, PartitionOut, RideOut } from './schemas.js';
+import { statEvidence, validateCompose, validateNarrate, validatePartition, validateRide, type Report } from './validate.js';
 import { atlasKey, drop, fingerprint, passKey, read, write } from './browser-cache.js';
 
 export const ENRICH_ENDPOINT = '/api/enrich';
@@ -206,6 +206,17 @@ export async function enrichInBrowser(source: RepoSource, opts: EnrichClientOpti
     evidence = statEvidence(out);
   } catch (e) {
     fallbacks.push(`compose: ${(e as Error).message}`);
+  }
+
+  say('scripting the ride');
+  try {
+    const composed = buildAtlas(source, { partition, narration });
+    const out = await pass<RideOut>('ride', rideEvidence(source, composed));
+    const v = validateRide(out, composed, report);
+    if (v) narration = { ...narration, ride: v.ride, rideTitle: v.rideTitle };
+    else fallbacks.push('ride: nothing survived validation');
+  } catch (e) {
+    fallbacks.push(`ride: ${(e as Error).message}`);
   }
 
   data = buildAtlas(source, { partition, narration });
