@@ -20,9 +20,9 @@ set -euo pipefail
 RULE="Rate limit atlas enrichment"
 PATH_PREFIX="/api/enrich"
 
-# One atlas is about six requests: one partition, up to four narrate batches, one compose. Sixty
-# requests in five minutes is roughly ten atlases from one address — far above anyone reading the
-# map, far below anyone mining it.
+# One atlas is about seven requests: one partition, up to four narrate batches, one compose, one
+# ride. Sixty requests in five minutes is roughly eight atlases from one address — far above anyone
+# reading the map, far below anyone mining it.
 WINDOW=300
 REQUESTS=60
 
