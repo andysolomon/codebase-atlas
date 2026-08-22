@@ -1,3 +1,5 @@
+/* Design system: tokens/colors.css — mirrored verbatim from the Codebase Atlas design system.
+   Two colours per theme, paper and ink; every grey is ink at 55/28/16% alpha. Edit upstream first. */
 :root{
   --paper:#cfc79c; --paper-raised:#ddd6b2; --paper-sunken:#c8c093;
   --face-shade:#bdb488; --face-tint:#cec696;

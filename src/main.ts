@@ -1,5 +1,5 @@
-import { defineAtlas } from './atlas/engine';
-import type { AtlasData, PaperTheme } from './atlas/types';
+import { defineAtlas, resolvePaper } from './atlas/engine';
+import type { AtlasData } from './atlas/types';
 import { buildAtlas, loadGitHub, parseGitHub } from './analyze';
 import type { RepoSource } from './analyze';
 import { openLocalRepo, supportsLocalRepos } from './analyze/local';
@@ -10,23 +10,31 @@ import type { TrailEntry } from './trail';
 
 defineAtlas();
 
-const PAPERS: PaperTheme[] = ['tan', 'light', 'dark'];
 const atlas = document.getElementById('atlas') as import('./atlas/engine').Atlas;
 const status = document.getElementById('status') as HTMLDivElement;
 
-// Theme: ?paper=tan|light|dark (default tan). Persisted in the URL so links carry the theme.
-const q = new URLSearchParams(location.search).get('paper');
-const paper: PaperTheme = PAPERS.includes(q as PaperTheme) ? (q as PaperTheme) : 'tan';
+// Paper: ?paper=<name> for any theme the design system ships (default tan). Persisted in the URL so
+// links carry the theme; `light` and `dark`, the names the first two shipped under, still resolve.
+// data-theme on the root is what selects the token block, so the page and the element share a palette.
+const rawPaper = new URLSearchParams(location.search).get('paper');
+const paper = resolvePaper(rawPaper);
 atlas.setAttribute('paper', paper);
 document.documentElement.dataset.theme = paper;
 
-// Keep the page background in step whenever the element's paper attribute changes.
-new MutationObserver(() => {
-  const p = atlas.getAttribute('paper') as PaperTheme;
-  document.documentElement.dataset.theme = p;
+/** Write the paper into the URL under the name the design system uses for it now. */
+function syncPaperParam(p: string) {
   const u = new URL(location.href);
   if (p === 'tan') u.searchParams.delete('paper'); else u.searchParams.set('paper', p);
   history.replaceState(null, '', u.pathname + u.search + u.hash);
+}
+// An old ?paper=light|dark link lands where it always did, and leaves with the current name on it.
+if (rawPaper !== null && rawPaper !== paper) syncPaperParam(paper);
+
+// Keep the page background in step whenever the element's paper attribute changes.
+new MutationObserver(() => {
+  const p = resolvePaper(atlas.getAttribute('paper'));
+  document.documentElement.dataset.theme = p;
+  syncPaperParam(p);
 }).observe(atlas, { attributes: true, attributeFilter: ['paper'] });
 
 // ── status line (shown while a repo is being scanned, or on error) ──

@@ -15,11 +15,18 @@ import { MapControls } from 'three/addons/controls/MapControls.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Edge, External, Theme } from './types';
 
-export const MONO = "ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace";
+/* The design system's one family (tokens/typography.css). The literal is the fallback for the
+   element used without the stylesheet — every use of MONO is a CSS declaration, never a canvas font. */
+export const MONO = "var(--font-mono, ui-monospace,'SF Mono',SFMono-Regular,Menlo,Consolas,monospace)";
 
 /** The prototype's isometric projection: x = (gx−gy)·SX, y = (gx+gy)·SY − h·SH. The camera below
     reproduces it exactly: azimuth 45°, elevation asin(SY/SX), one grid unit = SX/cos45 pixels. */
 const SX = 26, SY = 14.3, SH = 16;
+
+/** --leader-dashed: the design system's advisory dash — 2.5px on, 3px off at the default zoom, in
+    world units. Every dashed line on the map is advisory (an optional, lazy or type-only import, or
+    a leader out to something outside the repo) and none of them animate. */
+const DASH = { on: 2.5 / SX, off: 3 / SX };
 const ELEV = Math.asin(SY / SX);                     // 33.4° above the ground
 export const BASE_PX = SX / Math.cos(Math.PI / 4);   // px per world unit at camera.zoom = 1
 const HZ = SH / (Math.cos(ELEV) * BASE_PX);          // world height of h = 1
@@ -411,6 +418,17 @@ export class AtlasScene {
     this.labelLayer.innerHTML = '';
   }
 
+  /** The design system's hatch: dense 45° on the shade face, light −45° on the tint face
+      (tokens/patterns.css, and the drafting spec the whole look is drawn from). The numbers below are
+      that spec in screen pixels at the default zoom — period, line weight, ink alpha. One texture tile
+      covers one grid unit, which is SX px across, so the canvas is drawn at size/SX and minified back
+      down to the stated weight by the GPU. */
+  private static readonly HATCH = {
+    A: { period: 4.2, alpha: 0.5,  dir: 1 },   // --hatch-dense, on --face-shade
+    B: { period: 5.2, alpha: 0.28, dir: -1 },  // --hatch-light, on --face-tint
+  } as const;
+  private static readonly HATCH_LINE = 0.9;
+
   private hatch(key: 'A' | 'B' | 'Ad' | 'Bd') {
     if (this.textures[key]) return this.textures[key];
     const T = this.T, size = 128, c = document.createElement('canvas'); c.width = c.height = size;
@@ -418,9 +436,13 @@ export class AtlasScene {
     const base = new THREE.Color(key[0] === 'A' ? T.faceA : T.faceB);
     if (key.endsWith('d')) base.multiplyScalar(0.88);   // the faces that hide at the default angle: a touch darker
     g.fillStyle = '#' + base.getHexString(); g.fillRect(0, 0, size, size);
-    const n = key[0] === 'A' ? 8 : 6, gap = size / n;
-    g.strokeStyle = T.ink; g.globalAlpha = key[0] === 'A' ? 0.5 : 0.28; g.lineWidth = 1.6;
-    const dir = key[0] === 'A' ? 1 : -1;
+    const spec = AtlasScene.HATCH[key[0] as 'A' | 'B'];
+    const perTile = size / SX;                       // texture px per screen px at the default zoom
+    // 45° lines only tile without a seam when a whole number of them fits the square, so the period
+    // lands on the nearest count that does — 4.33px and 5.2px against the spec's 4.2 and 5.2.
+    const n = Math.max(1, Math.round(SX / spec.period)), gap = size / n;
+    g.strokeStyle = T.ink; g.globalAlpha = spec.alpha; g.lineWidth = AtlasScene.HATCH_LINE * perTile;
+    const dir = spec.dir;
     for (let i = -n; i <= 2 * n; i++) {
       const k = i * gap;
       g.beginPath();
@@ -481,7 +503,8 @@ export class AtlasScene {
       box.expandByObject(mesh);
       const codeFS = b.slab ? 9 : Math.max(10, Math.min(19, Math.min(b.w, b.d) * 6.5));
       const codeEl = this.label(`font-weight:700;letter-spacing:.08em;color:${T.ink}`, b.code);
-      const nameEl = this.label(`font-size:8.5px;letter-spacing:.1em;color:${T.ink}`, b.name.toUpperCase());
+      const nameEl = this.label(`font-size:var(--fs-meta);letter-spacing:var(--ls-meta);color:${T.ink}`, b.name.toUpperCase());
+      // the block's location sits a step under --fs-meta: the smallest thing on the map, by design
       const locEl = b.loc ? this.label(`font-size:7.5px;color:${T.dim}`, b.loc) : null;
       const rec: BlockRec = { b, mesh, top, outline, codeEl, nameEl, locEl, codeFS, area: b.w * b.d };
       this.blocks.push(rec); this.byId[b.id] = rec;
@@ -489,7 +512,7 @@ export class AtlasScene {
 
     // ── edges: elevated arcs from roof to roof ──
     const dotTex = this.dotTexture(T);
-    const dashMat = new THREE.LineDashedMaterial({ color: ink, dashSize: 0.12, gapSize: 0.1, transparent: true, opacity: 0.45 });
+    const dashMat = new THREE.LineDashedMaterial({ color: ink, dashSize: DASH.on, gapSize: DASH.off, transparent: true, opacity: 0.45 });
     const solidMat = new THREE.LineBasicMaterial({ color: ink, transparent: true, opacity: 0.6 });
     const proxyMat = new THREE.MeshBasicMaterial({ visible: false });
     const endMat = new THREE.MeshBasicMaterial({ color: ink, transparent: true, opacity: 0.6 });
@@ -536,7 +559,7 @@ export class AtlasScene {
     });
 
     // ── externals: a dashed leader from the roof to a floating name ──
-    const extMat = new THREE.LineDashedMaterial({ color: ink, dashSize: 0.08, gapSize: 0.09, transparent: true, opacity: 0.5 });
+    const extMat = new THREE.LineDashedMaterial({ color: ink, dashSize: DASH.on, gapSize: DASH.off, transparent: true, opacity: 0.5 });
     this.disposables.push(extMat);
     externals.forEach(({ x, t }) => {
       const y = (t.h + 0.15) * HZ;
@@ -544,7 +567,7 @@ export class AtlasScene {
       const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
       const ln = new THREE.Line(geo, extMat); ln.computeLineDistances();
       this.content.add(ln); this.disposables.push(geo);
-      this.exts.push({ el: this.label(`font-size:8px;letter-spacing:.14em;color:${T.dim}`, x.name), at: b });
+      this.exts.push({ el: this.label(`font-size:var(--fs-meta);letter-spacing:var(--ls-meta);color:${T.dim}`, x.name), at: b });
     });
 
     // ── bounds, shadow frustum, ground ──

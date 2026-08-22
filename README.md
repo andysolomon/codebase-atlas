@@ -16,9 +16,11 @@ bun run preview
 
 | Path | What |
 | --- | --- |
-| `src/atlas/engine.ts` | The element — topbar, sidebar, right panel, tooltip, trace, inside-view — ported from `prototype/atlas-engine.js`. Registers `<codebase-atlas paper="tan\|light\|dark" flow="true\|false">`. |
+| `src/atlas/engine.ts` | The element — topbar, sidebar, right panel, tooltip, trace, inside-view — ported from `prototype/atlas-engine.js`. Registers `<codebase-atlas paper="tan\|blueprint\|dark-luxe\|graphite\|oxblood" flow="true\|false">`. |
 | `src/atlas/scene.ts` | The map itself: a Three.js scene with `MapControls`, an orthographic camera by default (`FLAT`) or perspective (`DEEP`), elevated import arcs, contact shadows, DOM labels that stay upright and thin out as you zoom out, and the animated FIT / RESET / focus moves. |
 | `src/atlas/types.ts` | The `AtlasData` contract (structures, edges, externals, trace, groups, stats). |
+| `src/atlas/theme.ts` | The design system's colour tokens, resolved out of the cascade into the concrete pair the canvas needs. Owns the paper list and the old paper names. |
+| `src/styles/` | The design system's token layer, mirrored into the app — colour, type, spacing, patterns. `src/styles/README.md` says how it is wired and how to re-sync it. |
 | `src/data/arc-worlds.ts` | Demo dataset: `andysolomon/arc-worlds` (Little Worlds). |
 | `src/main.ts` | App chrome: defines the element, feeds it the dataset, reads `?paper=`, `?repo=`, `?atlas=` from the URL. |
 | `src/analyze/` | The repo analyzer — turns a file listing into an `AtlasData` (see below). |
@@ -33,17 +35,34 @@ bun run preview
 | `api/enrich.ts` | Vercel Function that runs one AI pass, for the in-browser scan. |
 | `scripts/atlas.ts` | CLI: `bun run atlas <path \| github-url>`. |
 | `scripts/eval-atlas.ts` | Scores a generated atlas against the hand-written `arc-worlds` one. |
-| `prototype/` | The original design-system bundle and prototype — the source of truth. |
+| `prototype/` | A snapshot of the design system's export — specimen cards, component JSX, and the SVG prototype the Three.js map was ported from. |
 
 ## Usage
 
 - **Repository** — the topbar's `⌕ OPEN REPO` field takes a GitHub repo or an atlas URL; `⌂ LOCAL FOLDER` opens one off this machine. By URL: `?repo=owner/repo` scans GitHub live, `?atlas=/atlases/x.json` loads a pre-built atlas, neither → the bundled demo.
 - **Analysis** — `✦ ANALYZE` reads the code with a model and rewrites the map (see [AI analysis](#ai-analysis)). Greyed out for a pre-built atlas: its prose is already written.
 - **History** — `◀` `▶` step through the repositories opened this session. Stepping back is instant and costs nothing: the built map, including any analysis, is kept with the entry. Repos openable by name are remembered across reloads and suggested in the field.
-- **Theme** — `?paper=tan|light|dark` in the URL, or the `PAPER · …` button in the topbar. The URL is kept in step.
+- **Paper** — `?paper=tan|blueprint|dark-luxe|graphite|oxblood` in the URL, or the `PAPER · …` button in the topbar, which cycles them. The URL is kept in step. `light` and `dark` were the names the first two shipped under; those links still land, and leave with the current name on them.
 - **Deep links** — `#inside=<id>` opens a structure; `#trace=<n>` opens trace step *n* (0-based); `#edge=<from>,<to>` selects an import.
 - **Keyboard** — `ESC` exits inside-view / ends trace / deselects; `←` `→` step a trace. With the map focused: arrows pan (`⇧` for more), `+` `−` zoom, `F` fits, `R` resets the isometric view, `N` turns back to north.
 - **Map** — drag to pan, right-drag or `ctrl`-drag to turn and tilt, wheel to zoom toward the cursor; one finger pans, two fingers pinch and twist. Click selects — a block, or an import arc, which opens the relationship in the panel: what travels along it and both ends as buttons, with the rest of the map receding. Double-click flies to a block and goes inside it; on an arc it frames both ends. The control stack top-right: `⌖ FIT` frames everything, `⟲ RESET` restores the original isometric composition, `+` `−` zoom, the compass turns back to north, `FLAT`/`DEEP` switches between orthographic and perspective without moving the view, and `?` lists every gesture. The camera never goes under the paper, never tilts past useful angles, and cannot pan or zoom the atlas out of sight. `prefers-reduced-motion` turns the flights into cuts and switches off inertia.
+
+## The design system
+
+The look is not invented here. It comes from the **Codebase Atlas design system** on claude.ai/design:
+two colours per paper, one mono family, a nine-step type scale, three rule weights, no rounded corners
+and no shadows. `src/styles/tokens/` mirrors its token files verbatim, and that is the only place in
+`src/` where a colour, a size or a border weight is written down.
+
+The chrome reads the tokens straight out of the cascade — `var(--fs-body)`, `var(--border-w)`,
+`var(--highlight-bg)`. The map can't, because WebGL has never heard of `var(--ink)`, so `src/atlas/theme.ts`
+resolves one paper's tokens through a throwaway element and hands the scene the concrete pair. The two
+parts of the system that are geometry rather than CSS live as named constants in `src/atlas/scene.ts`:
+the hatch (dense 45° on shade faces, light −45° on tint faces, at the periods and ink alphas the
+drafting spec states) and the 2.5/3 advisory dash every optional link is drawn with.
+
+Adding a paper is a token block and a name in `PAPERS`. Nothing else changes: the page, the chrome and
+the map all pick it up by cascade. See `src/styles/README.md`.
 
 ## Mapping any repository
 

@@ -1,16 +1,21 @@
 /** Data contract for a Codebase Atlas dataset (see prototype/atlas-data.js for a worked example). */
 
-export type PaperTheme = 'tan' | 'light' | 'dark';
+/** The papers the design system ships. `light` and `dark` are still accepted in URLs and resolve to
+    `blueprint` and `dark-luxe` — see `resolvePaper` in ./theme. */
+export type PaperTheme = 'tan' | 'blueprint' | 'dark-luxe' | 'graphite' | 'oxblood';
 
+/** One paper, resolved out of the design system's colour tokens (see ./theme). Canvas and WebGL
+    cannot read `var(--ink)`, so the map carries the resolved pair around instead. */
 export interface Theme {
-  bg: string;
-  paper: string;
-  top: string;
-  faceA: string;
-  faceB: string;
-  ink: string;
-  dim: string;
-  faint: string;
+  /** --paper */          bg: string;
+  /** --paper-sunken */   paper: string;
+  /** --paper-raised */   top: string;
+  /** --face-shade */     faceA: string;
+  /** --face-tint */      faceB: string;
+  /** --ink */            ink: string;
+  /** --ink-dim, 55% */   dim: string;
+  /** --ink-hair, 28% */  hair: string;
+  /** --ink-faint, 16% */ faint: string;
 }
 
 export interface ChildPart {

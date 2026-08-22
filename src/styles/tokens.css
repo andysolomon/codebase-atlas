@@ -1,0 +1,6 @@
+/* The Codebase Atlas design system's token layer, mirrored into the app.
+   Upstream: claude.ai/design — "Codebase Atlas Design System" (styles.css → tokens/). */
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/patterns.css";
