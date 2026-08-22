@@ -68,6 +68,8 @@ export interface SceneHooks {
   arrowsTaken(): boolean;
   /** The viewport changed size. A live flight has already been re-aimed by the time this fires. */
   onResize?(): void;
+  /** A hand is on the camera — a drag, a wheel, a pinch — whether or not a flight was under way. */
+  onGesture?(): void;
 }
 
 /** Why a flight did not land. `'user'` is any public camera action — fit, focus, a key — which only a
@@ -242,7 +244,7 @@ export class AtlasScene {
     c.rotateSpeed = 0.6;
     c.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
     c.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_ROTATE };
-    c.addEventListener('start', () => { this.cancelFlight('gesture'); this.tween = null; this.canvas.style.cursor = 'grabbing'; });
+    c.addEventListener('start', () => { this.cancelFlight('gesture'); this.tween = null; this.canvas.style.cursor = 'grabbing'; this.hooks.onGesture?.(); });
     c.addEventListener('end', () => { this.canvas.style.cursor = this.hovered || this.hoveredEdge ? 'pointer' : 'grab'; });
     c.addEventListener('change', () => { this.clampTarget(); this.invalidate(); });
     this.applyLimits(c);
